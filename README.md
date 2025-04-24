@@ -1,4 +1,6 @@
-# Goal Instability Experiment
+# Truffaldino
+
+The name is from the Italian play [The Servant of Two Masters](https://en.wikipedia.org/wiki/The_Servant_of_Two_Masters).
 
 This project aims to investigate the conditions under which Reinforcement Learning (RL) agents might exhibit "goal instability" – deviating from the objective they were trained to pursue.
 
