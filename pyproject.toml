@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "truffaldino"
+version = "0.1.0"
+description = "Environment for simulating mediated negotiations to study RL goal instability."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+  {name = "David Johnston", email = "david@eleuther.ai"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+
+[project.scripts]
+# Add command-line scripts here if needed later
+# run-negotiation = "negotiation_env.cli:main"
+
+
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["negotiation_env*"]
+exclude = ["tests*", "examples*"]
+
+# Development dependencies
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+] 
