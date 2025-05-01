@@ -155,15 +155,23 @@ class NegotiationSession:
             pass
 
     def _is_finished(self) -> bool:
-        if self.party_A_accepted and self.party_B_accepted:
-            # Requires a valid offer exists that both accepted
-            return self.current_offer is not None
+        # Check for agreement first
+        agreement_reached = False
+        if self.current_offer is not None:
+            if self.offer_proposed_by == "A" and self.party_B_accepted:
+                agreement_reached = True
+            elif self.offer_proposed_by == "B" and self.party_A_accepted:
+                agreement_reached = True
+
+        if agreement_reached:
+            return True
+
         # Check if max turns reached
         # Turn count increments *after* mediator speaks, so check >= max_turns * 2
         return self.turn >= self.scenario.n_turns * 2
 
-    def run(self, seed: Optional[int] = None) -> Dict[str, Any]:
-        """Runs the negotiation process until completion."""
+    def run(self, seed: Optional[int] = None, md_log_path: Optional[str] = None, json_log_path: Optional[str] = None) -> Dict[str, Any]:
+        """Runs the negotiation process until completion, optionally logging to files."""
         if seed is not None:
             random.seed(seed)
 
@@ -179,6 +187,22 @@ class NegotiationSession:
         # Determine starting party
         active_party_id: Literal["A", "B"] = random.choice(["A", "B"])
 
+        md_log_file = None
+        if md_log_path:
+            try:
+                md_log_file = open(md_log_path, 'w', encoding='utf-8')
+                md_log_file.write(f"# Negotiation Log: {self.scenario.name}\n\n")
+                md_log_file.write(f"- Party A ({self.party_A.role}): {self.party_A.name}\n")
+                md_log_file.write(f"- Party B ({self.party_B.role}): {self.party_B.name}\n")
+                md_log_file.write(f"- Mediator: {self.mediator.name}\n")
+                md_log_file.write(f"- Seed: {seed}\n")
+                md_log_file.write(f"- Starting Party: {active_party_id}\n")
+                md_log_file.write(f"- Max turns per party: {self.scenario.n_turns}\n\n")
+                md_log_file.write("---\n\n")
+            except IOError as e:
+                print(f"Warning: Could not open markdown log file {md_log_path}: {e}")
+                md_log_file = None # Ensure it's None if opening failed
+
         print(f"--- Starting Negotiation: {self.scenario.name} ---")
         print(f"Party A ({self.party_A.role}): {self.party_A.name}")
         print(f"Party B ({self.party_B.role}): {self.party_B.name}")
@@ -190,7 +214,11 @@ class NegotiationSession:
         while not self._is_finished():
             current_party = self._get_party(active_party_id)
             inactive_party_id = "B" if active_party_id == "A" else "A"
-            print(f"\n--- Turn {self.turn // 2 + 1}.{1 if active_party_id == 'A' else 2}: {current_party.name}'s move (to Mediator) ---")
+            turn_num_display = self.turn // 2 + 1
+            party_turn_marker = 1 if active_party_id == 'A' else 2
+            print(f"\n--- Turn {turn_num_display}.{party_turn_marker}: {current_party.name}'s move (to Mediator) ---")
+            if md_log_file:
+                 md_log_file.write(f"## Turn {turn_num_display}.{party_turn_marker}: {current_party.name} -> Mediator\n\n")
 
             # 1. Get Party Action
             party_prompt = self._build_party_prompt(active_party_id)
@@ -205,11 +233,20 @@ class NegotiationSession:
                 party_action_json = {"action": "reject"} # Default to reject on error
                 party_raw_response = f"Error: {e}\nDefaulting to: {json.dumps(party_action_json)}"
 
+            # Log party message before recording internally
+            if md_log_file:
+                md_log_file.write(f"**{current_party.name} ({current_party.role}) says:**\n")
+                md_log_file.write(f"```text\n{party_raw_response}\n```\n")
+                md_log_file.write(f"**Action Parsed:** `{json.dumps(party_action_json)}`\n\n")
+
             self._record_turn(current_party, current_party.role, party_raw_response, party_action_json, recipient=None) # Party -> Mediator
             print(f"{current_party.name} proposed action: {party_action_json}")
 
             # 2. Mediator Relays Action
-            print(f"--- Turn {self.turn // 2 + 1}.{1 if active_party_id == 'A' else 2}: Mediator relays to {inactive_party_id} ---")
+            print(f"--- Turn {turn_num_display}.{party_turn_marker}: Mediator relays to {inactive_party_id} ---")
+            if md_log_file:
+                md_log_file.write(f"## Turn {turn_num_display}.{party_turn_marker}: Mediator -> {self._get_party(inactive_party_id).name}\n\n")
+
             mediator_prompt = self._build_mediator_prompt(active_party_id, party_raw_response, party_action_json)
             try:
                 mediator_raw_response = self.mediator.act(mediator_prompt)
@@ -223,6 +260,13 @@ class NegotiationSession:
                 print(f"Attempting to relay original party action {party_action_json} directly.")
                 mediator_action_json = party_action_json # Fallback to party's action
                 mediator_raw_response = f"Error processing mediator response: {e}\nRelaying party action: {json.dumps(mediator_action_json)}"
+
+            # Log mediator message before recording internally
+            if md_log_file:
+                md_log_file.write(f"**{self.mediator.name} (Mediator) says to {self._get_party(inactive_party_id).name}:**\n")
+                md_log_file.write(f"```text\n{mediator_raw_response}\n```\n")
+                md_log_file.write(f"**Action Parsed/Relayed:** `{json.dumps(mediator_action_json)}`\n\n")
+                md_log_file.write("---\n\n") # Separator between full turns
 
             # 3. Update State based on the *original party's intended action*
             self._update_state_from_action(party_action_json, active_party_id)
@@ -243,18 +287,43 @@ class NegotiationSession:
         # 6. Determine Final Outcome
         print("\n--- Negotiation Finished ---")
         final_outcome: Optional[Dict[str, Any]] = None
-        accepted = self.party_A_accepted and self.party_B_accepted and self.current_offer is not None
+        # Determine acceptance based on the logic in _is_finished
+        accepted = False
+        if self.current_offer is not None:
+            if self.offer_proposed_by == "A" and self.party_B_accepted:
+                accepted = True
+            elif self.offer_proposed_by == "B" and self.party_A_accepted:
+                accepted = True
+
+        if md_log_file:
+            md_log_file.write("## Final Outcome\n\n")
 
         if accepted:
             final_outcome = self.current_offer
             print(f"Agreement reached! Offer: {final_outcome}")
+            if md_log_file:
+                md_log_file.write(f"**Agreement reached!**\n")
+                md_log_file.write(f"- Final Offer: `{json.dumps(final_outcome)}`\n")
         else:
             print("No agreement reached.")
+            if md_log_file:
+                md_log_file.write("**No agreement reached.**\n")
 
         payoff_A, payoff_B = self.scenario.get_payoffs(final_outcome)
         print(f"Final Payoffs: Party A ({self.party_A.role}) = {payoff_A}, Party B ({self.party_B.role}) = {payoff_B}")
+        if md_log_file:
+            md_log_file.write(f"- Final Payoff A ({self.party_A.role}): {payoff_A}\n")
+            md_log_file.write(f"- Final Payoff B ({self.party_B.role}): {payoff_B}\n")
+            md_log_file.write(f"- Turns taken (total agent messages): {self.turn}\n")
 
-        return {
+        # Close markdown log file if open
+        if md_log_file:
+            try:
+                md_log_file.close()
+            except IOError as e:
+                print(f"Warning: Could not close markdown log file {md_log_path}: {e}")
+
+        results = {
             "scenario": self.scenario.name,
             "party_A": self.party_A.name,
             "party_B": self.party_B.name,
@@ -265,4 +334,14 @@ class NegotiationSession:
             "payoff_B": payoff_B,
             "turns_taken": self.turn,
             "transcript": self.transcript,
-        } 
+        }
+
+        # Save results to JSON log file if path provided
+        if json_log_path:
+            try:
+                with open(json_log_path, 'w', encoding='utf-8') as f_json:
+                    json.dump(results, f_json, indent=2)
+            except IOError as e:
+                print(f"Warning: Could not write JSON log file {json_log_path}: {e}")
+
+        return results 

@@ -19,6 +19,10 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+dependencies = [
+    "numpy",
+    "scipy",
+]
 
 
 [project.scripts]

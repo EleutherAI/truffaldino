@@ -1,0 +1,161 @@
+import json
+import random
+from typing import Dict, Any, Tuple, Literal
+import time
+
+from negotiation_env.llm_call import openrouter_llm_call
+
+PROMPT_TEMPLATE_FILE = "negotiation_env/house_price/generate_context_prompt.txt"
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 5
+
+BuyerRole = Literal["Owner-Occupier", "Investor"]
+SellerRole = Literal["Owner-Occupier", "Investor"]
+
+def load_prompt_template() -> str:
+    """Loads the prompt template from the file."""
+    try:
+        with open(PROMPT_TEMPLATE_FILE, 'r') as f:
+            return f.read()
+    except FileNotFoundError:
+        print(f"Error: Prompt template file not found at {PROMPT_TEMPLATE_FILE}")
+        raise
+    except Exception as e:
+        print(f"Error reading prompt template file: {e}")
+        raise
+
+def format_prompt(template: str, state: Dict[str, Any], buyer_role: BuyerRole, seller_role: SellerRole) -> str:
+    """Formats the prompt template with data from the negotiation state."""
+    # Assign history lengths (example logic, can be customized)
+    n_hist_total = len(state['price_history'])
+    n_hist_agent = n_hist_total
+    n_hist_seller = max(1, n_hist_total // 3 + random.randint(-n_hist_total // 10, n_hist_total // 10))
+    n_hist_buyer = max(1, n_hist_total // 3 + random.randint(-n_hist_total // 10, n_hist_total // 10))
+
+    # Pre-compute unit description string
+    unit_description = 'unit' if state['house_details']['unit'] else 'house'
+
+    format_args = {
+        "buyer_role": buyer_role,
+        "seller_role": seller_role,
+        "suburb": state['house_details']['suburb'],
+        "is_unit": state['house_details']['unit'],
+        "unit_description": unit_description,
+        "bedrooms": state['house_details']['bedrooms'],
+        "N_hist_agent": n_hist_agent,
+        "sigma_comp": state['market']['sigma_annual'],
+        "lambda_m": state['market']['lambda_m_weekly'],
+        "lambda_b": state['market']['lambda_b_weekly'],
+        "r": state['market']['r_annual'] * 100, # Percentage
+        "N_hist_buyer": n_hist_buyer,
+        "delta": state['buyer']['delta'],
+        "C_b": state['buyer']['C_b'],
+        "N_hist_seller": n_hist_seller,
+        "q": state['house']['q'],
+        "C_s": state['seller']['C_s'],
+        "k_s": state['seller']['k_s'],
+        "D": state['seller']['D'],
+    }
+    return template.format(**format_args)
+
+def generate_narrative_contexts(
+    negotiation_state: Dict[str, Any],
+    buyer_role: BuyerRole,
+    seller_role: SellerRole,
+    llm_temp: float = 0.7,
+    llm_max_tokens: int = 3000, # Allow ample tokens for 3x 1000 words
+) -> Dict[str, str]:
+    """
+    Generates narrative contexts for buyer, seller, and agent using an LLM.
+
+    Args:
+        negotiation_state: The dictionary containing the sampled state.
+        buyer_role: The assigned role for the buyer.
+        seller_role: The assigned role for the seller.
+        llm_temp: Temperature for LLM generation.
+        llm_max_tokens: Max tokens for LLM response.
+
+    Returns:
+        A dictionary containing "buyer_context", "seller_context", and "agent_context".
+
+    Raises:
+        ValueError: If unable to generate valid contexts after retries.
+    """
+    prompt_template = load_prompt_template()
+    formatted_prompt = format_prompt(prompt_template, negotiation_state, buyer_role, seller_role)
+    for attempt in range(MAX_RETRIES):
+        print(f"Attempt {attempt + 1} of {MAX_RETRIES} to generate narrative contexts...")
+        raw_response = openrouter_llm_call(
+            prompt=formatted_prompt,
+            agent_name="NarrativeGenerator",
+            temperature=llm_temp,
+            max_tokens=llm_max_tokens,
+            # Potentially add response_format for specific models if supported
+            # response_format={"type": "json_object"}
+        )
+
+        try:
+            # Basic cleaning: Sometimes models wrap JSON in ```json ... ```
+            if raw_response.startswith("```json"):
+                raw_response = raw_response[7:]
+            if raw_response.endswith("```"):
+                raw_response = raw_response[:-3]
+            raw_response = raw_response.strip()
+            contexts = json.loads(raw_response)
+
+            required_keys = ["buyer_context", "seller_context", "agent_context"]
+            if all(k in contexts for k in required_keys) and \
+               all(isinstance(contexts[k], str) for k in required_keys):
+                print("Successfully generated and parsed narrative contexts.")
+                # Optional: Add length validation here if needed
+                # if not (200 <= len(contexts["buyer_context"].split()) <= 1000 and ...):
+                #    raise ValueError("Generated context length out of bounds.")
+                return {
+                    "buyer_context": contexts["buyer_context"],
+                    "seller_context": contexts["seller_context"],
+                    "agent_context": contexts["agent_context"],
+                }
+            else:
+                print("Error: LLM response missing required keys or values are not strings.")
+                print(f"Raw response: {raw_response}")
+
+        except json.JSONDecodeError as e:
+            print(f"Error: Failed to decode LLM response as JSON: {e}")
+            print(f"Raw response: {raw_response}")
+        except ValueError as e:
+            print(f"Error: {e}")
+            print(f"Raw response: {raw_response}")
+
+
+        if attempt < MAX_RETRIES - 1:
+            print(f"Retrying in {RETRY_DELAY_SECONDS} seconds...")
+            time.sleep(RETRY_DELAY_SECONDS)
+
+    raise ValueError("Failed to generate valid narrative contexts after multiple retries.")
+
+# Example usage (can be run standalone for testing)
+if __name__ == "__main__":
+    # Create a mock negotiation state for testing
+    mock_state = {
+        'market': {'g_annual': 0.03, 'sigma_annual': 0.08, 'r_annual': 0.05, 'lambda_m_weekly': 1.0, 'lambda_b_weekly': 0.8, 'g_daily': 8e-05, 'sigma_daily': 0.004, 'r_daily': 0.00013, 'lambda_m_daily': 0.14, 'lambda_b_daily': 0.11},
+        'price_history': [900000.0, 901000.0, 900500.0] * 30, # Example history (90 points)
+        'P_today': 915000.0,
+        'house': {'q': 15000.0, 'V_h': 930000.0},
+        'seller': {'C_s': 200.0, 'k_s': 8000.0, 'D': 45},
+        'buyer': {'delta': 25000.0, 'C_b': 150.0, 'V_b': 940000.0},
+        'house_details': {'suburb': 'Fitzroy, Melbourne, Australia', 'unit': False, 'bedrooms': 3},
+        'derived': {'seller_option_premium': 5000.0, 'seller_reservation_price': [935200.0, 935400.0, 935600.0, 935800.0], 'buyer_outside_values': [910000.0, 909000.0, 908000.0, 907000.0]}
+    }
+    buyer_role: BuyerRole = "Owner-Occupier"
+    seller_role: SellerRole = "Investor"
+
+    try:
+        generated_contexts = generate_narrative_contexts(mock_state, buyer_role, seller_role)
+        print("\n--- Generated Contexts ---")
+        print("\nBuyer Context:\n", generated_contexts["buyer_context"])
+        print("\nSeller Context:\n", generated_contexts["seller_context"])
+        print("\nAgent Context:\n", generated_contexts["agent_context"])
+    except ValueError as e:
+        print(f"\nFailed to generate contexts: {e}")
+    except Exception as e:
+        print(f"\nAn unexpected error occurred: {e}")

@@ -23,3 +23,5 @@ The proposed experiment involves training an RL agent to act as a mediator in ze
 *   Resource sharing quotas
 
 The experiment will systematically manipulate the conditions listed in the hypothesis and measure the impact on the supervisor's success (e.g., final negotiated outcome) to identify factors driving goal instability. 
+
+We try to make the negotiation games somewhat realistic, as language models trained on large diverse datasets might have implicit knowledge that influences how they behave in realistic vs unrealistic situations.

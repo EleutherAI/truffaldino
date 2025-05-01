@@ -1,0 +1,55 @@
+You are an expert simulation assistant tasked with creating realistic narrative contexts for participants in a house negotiation simulation. Based on the provided numerical state information and assigned roles, generate detailed background stories for the Buyer, Seller, and their Agent.
+
+**Input Data:**
+
+*   **Roles:**
+    *   `buyer_role`: "{buyer_role}" (Either "Owner-Occupier" or "Investor")
+    *   `seller_role`: "{seller_role}" (Either "Owner-Occupier" or "Investor")
+*   **House Details (Common Knowledge):**
+    *   `suburb`: "{suburb}"
+    *   `unit_type`: {is_unit} (True if apartment/unit, False if house)
+    *   `bedrooms`: {bedrooms}
+*   **Market Data (Agent Focus):**
+    *   `N_hist_agent`: {N_hist_agent} (Number of recent comparable sales prices provided)
+    *   `sigma_comp`: {sigma_comp:.2f} (Annualized volatility of comparable house prices)
+    *   `lambda_m`: {lambda_m:.2f} (Weekly arrival rate of new comparable listings)
+    *   `lambda_b`: {lambda_b:.2f} (Weekly arrival rate of new credible buyer offers)
+    *   `r`: {r:.1f}% (Annual risk-free interest rate / discount rate)
+*   **Buyer Info:**
+    *   `N_hist_buyer`: {N_hist_buyer} (Number of recent comparable sales prices provided)
+    *   `delta` (Numerical fit premium): {delta:,.0f} --> **Narrativize this.** Explain *why* the buyer values this specific property more or less than the typical market price based on their role (occupier needs vs. investor potential). Do NOT mention the number {delta:,.0f}.
+    *   `C_b`: {C_b:,.0f} (Daily cost of waiting/searching - rent, storage, hassle, opportunity cost) --> State this number and explain it.
+*   **Seller Info:**
+    *   `N_hist_seller`: {N_hist_seller} (Number of recent comparable sales prices provided)
+    *   `q` (Numerical quality premium): {q:,.0f} --> **Narrativize this.** Explain *why* this property might be worth more or less than comparable sales based on its specific condition, features, or recent renovations, relevant to the seller's role (e.g., investor minimized upkeep vs. occupier's home improvements). Do NOT mention the number {q:,.0f}.
+    *   `C_s`: {C_s:,.0f} (Daily carrying cost - mortgage, taxes, utilities, stress) --> State this number and explain it.
+    *   `k_s`: {k_s:,.0f} (Lump sum penalty if not sold by deadline - e.g., bridge loan expiry, new job start, tax implications) --> State this number and explain it.
+    *   `D` (Soft deadline in days): {D} --> **Narrativize this.** Explain the *reason* for the deadline (related to `k_s` explanation) and the general timeframe (e.g., "within the next month or so", "by the end of the quarter"). Do NOT mention the number {D}.
+
+**Task:**
+
+Generate three distinct narrative contexts (strings): `buyer_context`, `seller_context`, and `agent_context`.
+
+**Requirements:**
+
+1.  **JSON Output:** Structure your response *only* as a valid JSON object with the keys "buyer_context", "seller_context", and "agent_context".
+2.  **Role Consistency:** Tailor the narratives to the assigned `buyer_role` and `seller_role`. An owner-occupier's motivations (family needs, dream home, schools, commute) differ from an investor's (rental yield, capital growth, portfolio diversification, ease of management).
+3.  **Narrativize Specific Values:** Convert `delta`, `q`, and `D` into compelling narrative elements *without* revealing the underlying numbers. Focus on the *why*.
+4.  **State Numerical Values:** Clearly state the numerical values for `C_b`, `C_s`, `k_s`, and the agent's market data (`sigma_comp`, `lambda_m`, `lambda_b`, `r`). Provide brief explanations for these costs/rates.
+5.  **Incorporate Common Knowledge:** Naturally weave the `suburb`, `unit_type`, and `bedrooms` into the buyer and seller stories.
+6.  **Agent Context:** The agent's context should focus on their market knowledge (using the provided rates and volatility), their understanding of the specific property (briefly), and their goal to facilitate a deal. They are aware of the number of historical data points given to each party (`N_hist_buyer`, `N_hist_seller`, `N_hist_agent`).
+7.  **Word Count:** Each context should be between 200 and 1000 words.
+8.  **Realism & Diversity:** Create plausible, engaging scenarios. Avoid clichés. Ensure the generated scenarios feel distinct based on the inputs.
+9.  **Strict JSON:** Do not include any text before or after the JSON object.
+
+**Example Output Structure (Illustrative - Content will vary based on input):**
+
+```json
+{{
+  "buyer_context": "As an owner-occupier looking for a family home, finding a {{bedrooms}}-bedroom property in {{suburb}} has been challenging. This particular {{unit_description}} feels special – the layout is perfect for your growing family and the proximity to the park is a huge plus, making it stand out significantly from others you've viewed [Narrativized delta]. You're currently renting, and the daily cost of continuing your search (rent, storage for furniture you bought in anticipation, and the general hassle) adds up to ${C_b:,.0f} per day. You have been provided with {{N_hist_buyer}} recent comparable sales prices for your reference...",
+  "seller_context": "You're selling your {{bedrooms}}-bedroom {{unit_description}} in {{suburb}} as an investor. While it's been a decent rental property, you're looking to rebalance your portfolio. You recently completed some minor renovations focused on tenant appeal, which you believe adds some value compared to strictly comparable properties [Narrativized q]. Your daily carrying costs (mortgage interest, property taxes, insurance) amount to ${C_s:,.0f}. You need the sale finalized relatively soon, ideally within the next couple of months, because the funds are earmarked for another investment opportunity. If the deal isn't closed by roughly that time, you'll face a significant capital commitment penalty of ${k_s:,.0f} due to the structure of the other deal [Narrativized D & k_s explanation]. You have been provided with {{N_hist_seller}} recent comparable sales prices...",
+  "agent_context": "You are representing the seller for the {{bedrooms}}-bedroom {{unit_description}} in {{suburb}}. The market data indicates moderate activity. New comparable listings appear at a rate of about {{lambda_m:.2f}} per week ({{lambda_m*52:.1f}}/year), while serious buyer offers emerge at roughly {{lambda_b:.2f}} per week ({{lambda_b*52:.1f}}/year). Price volatility for similar properties sits at an annualized {{sigma_comp:.2f}}, suggesting some fluctuation but not extreme instability. The current annual risk-free rate is {{r:.1f}}%. You've provided the seller with {{N_hist_seller}} comps and the buyer with {{N_hist_buyer}} comps, while your own analysis includes {{N_hist_agent}} data points. Your goal is to bridge the gap between the buyer's and seller's expectations and secure a successful transaction..."
+}}
+```
+
+**Now, generate the JSON response based on the provided input data.** 
