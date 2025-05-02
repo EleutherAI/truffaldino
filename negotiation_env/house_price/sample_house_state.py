@@ -113,7 +113,12 @@ import numpy as np
 from scipy.stats import halfnorm, gamma, poisson, norm
 from scipy.optimize import minimize_scalar # Added for optimization
 import random
-from negotiation_env.house_price.reveal_house_state import generate_narrative_contexts, BuyerRole, SellerRole # Import the new function
+from typing import Literal # Added
+from negotiation_env.house_price.reveal_house_state import generate_narrative_contexts # Keep this
+
+# Moved role definitions here
+BuyerRole = Literal["Owner-Occupier", "Investor"]
+SellerRole = Literal["Owner-Occupier", "Investor"]
 
 SUBURB_PRICES = {
     "Brooklyn, New York, USA": 900_000,
@@ -194,8 +199,8 @@ BEDROOM_DELTA_MULT = {
 
 UNIT_MULT = 0.8
 
-def sample_market_conditions(rng: np.random.Generator):
-    """Samples global market state variables."""
+def sample_market_conditions(rng: np.random.Generator, buyer_role: BuyerRole):
+    """Samples global market state variables, adjusting based on buyer role."""
     g = rng.normal(0.04, 0.02)
     sigma = np.abs(rng.normal(loc=0.0, scale=0.08))
     r = rng.normal(0.05, 0.01)
@@ -208,6 +213,11 @@ def sample_market_conditions(rng: np.random.Generator):
     # Arrival rates (events per week)
     lambda_m_weekly = rng.gamma(shape=3, scale=0.4) # New listings
     lambda_b_weekly = rng.gamma(shape=2, scale=0.5) # New buyers
+
+    # Adjust lambda_m based on buyer role
+    if buyer_role == "Investor":
+        lambda_m_weekly *= 5
+
     # Convert weekly rates to daily rates
     lambda_m_daily = lambda_m_weekly / 7
     lambda_b_daily = lambda_b_weekly / 7
@@ -260,24 +270,47 @@ def sample_house_specifics(P_today: float, sigma_q: float = DEFAULT_SIGMA_Q, rng
     V_h = q + P_today
     return {"q": q, "V_h": V_h}
 
-def sample_seller_idiosyncratics(rng: np.random.Generator):
-    """Samples seller-specific costs, constraints, deadlines, and liquidity preference."""
-    C_s_frac = rng.normal(-DEFAULT_SELLER_CARRY_COST_MEAN, DEFAULT_SELLER_CARRY_COST_STD * DEFAULT_SELLER_CARRY_COST_MEAN) # Carrying cost per day
+def sample_seller_idiosyncratics(rng: np.random.Generator, seller_role: SellerRole):
+    """Samples seller-specific costs, constraints, deadlines, and liquidity preference, adjusting based on seller role."""
+    # Sample C_s_frac based on seller role
+    if seller_role == "Owner-Occupier":
+        # Strictly negative carrying cost
+        abs_cost_frac = abs(rng.normal(DEFAULT_SELLER_CARRY_COST_MEAN, DEFAULT_SELLER_CARRY_COST_STD * DEFAULT_SELLER_CARRY_COST_MEAN))
+        C_s_frac = -abs_cost_frac
+    elif seller_role == "Investor":
+        # Generally positive carrying cost (use original positive mean)
+        C_s_frac = rng.normal(DEFAULT_SELLER_CARRY_COST_MEAN, DEFAULT_SELLER_CARRY_COST_STD * DEFAULT_SELLER_CARRY_COST_MEAN)
+    else: # Should not happen with Literal type hinting
+        raise ValueError(f"Invalid seller_role: {seller_role}")
+
     # Removed max(0, C_s_frac) - Allow negative C_s (net income from holding)
     k_s = rng.exponential(scale=DEFAULT_SELLER_CONSTRAINT_SCALE) # Capital constraint penalty
     D = rng.poisson(lam=DEFAULT_SELLER_DEADLINE_MEAN) # Soft deadline (days)
-    # Sample seller delta (liquidity preference)
-    delta_s_frac = rng.normal(0, DEFAULT_SIGMA_SELLER_DELTA)
+    # Sample seller delta (liquidity preference) - Ensure strictly positive
+    delta_s_frac = -abs(rng.normal(0, DEFAULT_SIGMA_SELLER_DELTA))
     # delta_s is calculated later based on P_today
     return {"C_s_frac": C_s_frac, "k_s": k_s, "D": D, "delta_s_frac": delta_s_frac}
 
 def sample_buyer_idiosyncratics(
-    P_today: float, 
-    sigma_delta: float = DEFAULT_SIGMA_DELTA, 
+    P_today: float,
+    buyer_role: BuyerRole,
+    sigma_delta: float = DEFAULT_SIGMA_DELTA,
     rng: np.random.Generator = np.random.default_rng()
 ) -> dict:
-    """Samples buyer-specific fit premium, costs, and calculates initial valuation."""
-    delta = rng.normal(0, sigma_delta*P_today)
+    """Samples buyer-specific fit premium, costs, and calculates initial valuation, adjusting delta variance based on buyer role."""
+    # Adjust sigma_delta based on buyer role
+    sigma_delta_eff = sigma_delta * P_today
+    if buyer_role == "Owner-Occupier":
+        # Increase variance by 2 (std dev by sqrt(2))
+        # Ensure strictly positive delta
+        delta = abs(rng.normal(0, sigma_delta_eff * np.sqrt(2)))
+    elif buyer_role == "Investor":
+        # Decrease variance by 2 (std dev by sqrt(2))
+        # Ensure strictly positive delta
+        delta = abs(rng.normal(0, sigma_delta_eff / np.sqrt(2)))
+    else: # Should not happen with Literal type hinting
+         raise ValueError(f"Invalid buyer_role: {buyer_role}")
+
     C_b = rng.normal(DEFAULT_BUYER_WAIT_COST_MEAN, DEFAULT_BUYER_WAIT_COST_STD)
     C_b = max(0, C_b)
     V_b = delta + P_today
@@ -541,13 +574,15 @@ def optimize_seller_threshold_and_premium(
 
 def sample_negotiation_state(
     P0: float,
+    buyer_role: BuyerRole,
+    seller_role: SellerRole,
     rng_seed: int | None = None
 ):
-    """Samples the complete state for a house negotiation game."""
+    """Samples the complete state for a house negotiation game, incorporating roles."""
     rng = np.random.default_rng(rng_seed)
 
-    # 1. Market
-    market_params = sample_market_conditions(rng)
+    # 1. Market (depends on buyer role)
+    market_params = sample_market_conditions(rng, buyer_role)
 
     # 2. Simulate recent price path
     price_history = simulate_price_process(
@@ -565,8 +600,8 @@ def sample_negotiation_state(
     house_params = sample_house_specifics(P_today, rng=rng)
     V_h = house_params["V_h"]
 
-    # 4. Seller
-    seller_params = sample_seller_idiosyncratics(rng)
+    # 4. Seller (depends on seller role)
+    seller_params = sample_seller_idiosyncratics(rng, seller_role)
     # Calculate absolute C_s (can be negative)
     seller_params["C_s"] = seller_params["C_s_frac"] * P_today
     C_s_abs = seller_params["C_s"] # Use this absolute value below
@@ -577,8 +612,8 @@ def sample_negotiation_state(
     # Calculate seller's effective value
     V_h_eff = V_h - delta_s_abs
 
-    # 5. Buyer
-    buyer_params = sample_buyer_idiosyncratics(P_today, rng=rng)
+    # 5. Buyer (depends on buyer role)
+    buyer_params = sample_buyer_idiosyncratics(P_today, buyer_role, rng=rng)
     V_b = buyer_params["V_b"]
 
     # 6. Compute outside options (using daily rates)
@@ -648,11 +683,21 @@ def sample_negotiation_state(
         }
     }
 
+    # Add roles to the state dictionary AFTER sampling for narrative generation
+    # (Narrative generation expects them in the state dictionary)
+    state['buyer_role'] = buyer_role
+    state['seller_role'] = seller_role
+
     return state
 
 if __name__ == '__main__':
     # Example Usage
-    from negotiation_env.house_price.reveal_house_state import generate_narrative_contexts, BuyerRole, SellerRole # Import the new function
+    # Roles are now defined locally
+
+    # Randomly assign roles BEFORE sampling
+    buyer_role: BuyerRole = random.choice(["Owner-Occupier", "Investor"]) # Uses local BuyerRole
+    seller_role: SellerRole = random.choice(["Owner-Occupier", "Investor"]) # Uses local SellerRole
+    print(f"Sampling with Roles: Buyer='{buyer_role}', Seller='{seller_role}'")
 
     suburb = random.choice(list(SUBURB_PRICES.keys()))
     is_unit = random.choice([True, False]) # Renamed 'unit' to 'is_unit' for clarity
@@ -668,7 +713,13 @@ if __name__ == '__main__':
         if bedrooms in BEDROOM_DELTA_MULT:
             initial_median_price *= BEDROOM_DELTA_MULT[bedrooms]
 
-    negotiation_state = sample_negotiation_state(initial_median_price, rng_seed=None)
+    # Pass roles to the sampling function
+    negotiation_state = sample_negotiation_state(
+        initial_median_price,
+        buyer_role=buyer_role, # Pass buyer role
+        seller_role=seller_role, # Pass seller role
+        rng_seed=None
+    )
 
     # Add house details to the state dictionary AFTER sampling
     negotiation_state["house_details"] = {
@@ -676,7 +727,6 @@ if __name__ == '__main__':
         "unit": is_unit, # Use the renamed variable
         "bedrooms": bedrooms + 2, # Store actual bedroom count (adjusting from delta keys)
     }
-
 
     print("Sampled Negotiation State (Numerical):")
     import json
@@ -699,17 +749,12 @@ if __name__ == '__main__':
 
     # --- Generate Narrative Contexts ---
     print("\n--- Generating Narrative Contexts ---")
-    # Randomly assign roles
-    buyer_role: BuyerRole = random.choice(["Owner-Occupier", "Investor"])
-    seller_role: SellerRole = random.choice(["Owner-Occupier", "Investor"])
+    # Roles are already assigned above
     print(f"Assigned Roles: Buyer='{buyer_role}', Seller='{seller_role}'")
 
     try:
-        narrative_contexts = generate_narrative_contexts(
-            negotiation_state,
-            buyer_role=buyer_role,
-            seller_role=seller_role
-        )
+        # Note: generate_narrative_contexts now reads roles from the state dictionary
+        narrative_contexts = generate_narrative_contexts(negotiation_state)
         print("\n--- Generated Contexts ---")
         print("\nBuyer Context:\n", narrative_contexts["buyer_context"])
         print("\nSeller Context:\n", narrative_contexts["seller_context"])

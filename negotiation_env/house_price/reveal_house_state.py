@@ -1,16 +1,18 @@
 import json
 import random
-from typing import Dict, Any, Tuple, Literal
+from typing import Dict, Any, Tuple, Literal, TYPE_CHECKING
 import time
 
 from negotiation_env.llm_call import openrouter_llm_call
+# Import roles from sample_house_state
 
 PROMPT_TEMPLATE_FILE = "negotiation_env/house_price/generate_context_prompt.txt"
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
 
-BuyerRole = Literal["Owner-Occupier", "Investor"]
-SellerRole = Literal["Owner-Occupier", "Investor"]
+# Conditionally import only for type checkers
+if TYPE_CHECKING:
+    from negotiation_env.house_price.sample_house_state import BuyerRole, SellerRole
 
 def load_prompt_template() -> str:
     """Loads the prompt template from the file."""
@@ -24,7 +26,7 @@ def load_prompt_template() -> str:
         print(f"Error reading prompt template file: {e}")
         raise
 
-def format_prompt(template: str, state: Dict[str, Any], buyer_role: BuyerRole, seller_role: SellerRole) -> str:
+def format_prompt(template: str, state: Dict[str, Any], buyer_role: "BuyerRole", seller_role: "SellerRole") -> str:
     """Formats the prompt template with data from the negotiation state."""
     # Assign history lengths (example logic, can be customized)
     n_hist_total = len(state['price_history'])
@@ -55,23 +57,22 @@ def format_prompt(template: str, state: Dict[str, Any], buyer_role: BuyerRole, s
         "C_s": state['seller']['C_s'],
         "k_s": state['seller']['k_s'],
         "D": state['seller']['D'],
+        "delta_s": state['seller']['delta_s'],
     }
     return template.format(**format_args)
 
 def generate_narrative_contexts(
     negotiation_state: Dict[str, Any],
-    buyer_role: BuyerRole,
-    seller_role: SellerRole,
     llm_temp: float = 0.7,
     llm_max_tokens: int = 3000, # Allow ample tokens for 3x 1000 words
 ) -> Dict[str, str]:
     """
     Generates narrative contexts for buyer, seller, and agent using an LLM.
+    Retrieves buyer_role and seller_role from the negotiation_state.
 
     Args:
-        negotiation_state: The dictionary containing the sampled state.
-        buyer_role: The assigned role for the buyer.
-        seller_role: The assigned role for the seller.
+        negotiation_state: The dictionary containing the sampled state,
+                           including 'buyer_role' and 'seller_role' keys.
         llm_temp: Temperature for LLM generation.
         llm_max_tokens: Max tokens for LLM response.
 
@@ -79,8 +80,16 @@ def generate_narrative_contexts(
         A dictionary containing "buyer_context", "seller_context", and "agent_context".
 
     Raises:
-        ValueError: If unable to generate valid contexts after retries.
+        ValueError: If unable to generate valid contexts after retries or if roles are missing.
+        KeyError: If 'buyer_role' or 'seller_role' is not found in negotiation_state.
     """
+    try:
+        buyer_role = negotiation_state['buyer_role']
+        seller_role = negotiation_state['seller_role']
+    except KeyError as e:
+        print(f"Error: Missing role information in negotiation_state: {e}")
+        raise # Re-raise the KeyError
+
     prompt_template = load_prompt_template()
     formatted_prompt = format_prompt(prompt_template, negotiation_state, buyer_role, seller_role)
     for attempt in range(MAX_RETRIES):
@@ -135,6 +144,7 @@ def generate_narrative_contexts(
 
 # Example usage (can be run standalone for testing)
 if __name__ == "__main__":
+
     # Create a mock negotiation state for testing
     mock_state = {
         'market': {'g_annual': 0.03, 'sigma_annual': 0.08, 'r_annual': 0.05, 'lambda_m_weekly': 1.0, 'lambda_b_weekly': 0.8, 'g_daily': 8e-05, 'sigma_daily': 0.004, 'r_daily': 0.00013, 'lambda_m_daily': 0.14, 'lambda_b_daily': 0.11},
@@ -144,13 +154,14 @@ if __name__ == "__main__":
         'seller': {'C_s': 200.0, 'k_s': 8000.0, 'D': 45},
         'buyer': {'delta': 25000.0, 'C_b': 150.0, 'V_b': 940000.0},
         'house_details': {'suburb': 'Fitzroy, Melbourne, Australia', 'unit': False, 'bedrooms': 3},
-        'derived': {'seller_option_premium': 5000.0, 'seller_reservation_price': [935200.0, 935400.0, 935600.0, 935800.0], 'buyer_outside_values': [910000.0, 909000.0, 908000.0, 907000.0]}
+        'derived': {'seller_option_premium': 5000.0, 'seller_reservation_price': [935200.0, 935400.0, 935600.0, 935800.0], 'buyer_outside_values': [910000.0, 909000.0, 908000.0, 907000.0]},
+        'buyer_role': "Owner-Occupier", # Add role to state
+        'seller_role': "Investor" # Add role to state
     }
-    buyer_role: BuyerRole = "Owner-Occupier"
-    seller_role: SellerRole = "Investor"
 
     try:
-        generated_contexts = generate_narrative_contexts(mock_state, buyer_role, seller_role)
+        # Call generate_narrative_contexts with only the state
+        generated_contexts = generate_narrative_contexts(mock_state)
         print("\n--- Generated Contexts ---")
         print("\nBuyer Context:\n", generated_contexts["buyer_context"])
         print("\nSeller Context:\n", generated_contexts["seller_context"])

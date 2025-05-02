@@ -17,14 +17,16 @@ You are an expert simulation assistant tasked with creating realistic narrative 
     *   `r`: {r:.1f}% (Annual risk-free interest rate / discount rate)
 *   **Buyer Info:**
     *   `N_hist_buyer`: {N_hist_buyer} (Number of recent comparable sales prices provided)
-    *   `delta` (Numerical fit premium): {delta:,.0f} --> **Narrativize this.** Explain *why* the buyer values this specific property more or less than the typical market price based on their role (occupier needs vs. investor potential). Do NOT mention the number {delta:,.0f}.
+    *   `delta` (Numerical fit premium): {delta:,.0f} --> **Narrativize this.** Explain *why* the buyer values this specific property more or less than the typical market price based on their role (occupier needs vs. investor potential). Do NOT mention the number {delta:,.0f}. The description should align with the magnitude of the preference: is it a large or small fraction of the total cost?
     *   `C_b`: {C_b:,.0f} (Daily cost of waiting/searching - rent, storage, hassle, opportunity cost) --> State this number and explain it.
 *   **Seller Info:**
     *   `N_hist_seller`: {N_hist_seller} (Number of recent comparable sales prices provided)
     *   `q` (Numerical quality premium): {q:,.0f} --> **Narrativize this.** Explain *why* this property might be worth more or less than comparable sales based on its specific condition, features, or recent renovations, relevant to the seller's role (e.g., investor minimized upkeep vs. occupier's home improvements). Do NOT mention the number {q:,.0f}.
-    *   `C_s`: {C_s:,.0f} (Daily carrying cost - mortgage, taxes, utilities, stress) --> State this number and explain it.
+    *   `C_s`: {C_s:,.0f} (Daily carrying cost - mortgage, taxes, utilities, stress; includes rental income for investors) --> State this number and explain it.
     *   `k_s`: {k_s:,.0f} (Lump sum penalty if not sold by deadline - e.g., bridge loan expiry, new job start, tax implications) --> State this number and explain it.
     *   `D` (Soft deadline in days): {D} --> **Narrativize this.** Explain the *reason* for the deadline (related to `k_s` explanation) and the general timeframe (e.g., "within the next month or so", "by the end of the quarter"). Do NOT mention the number {D}.
+    *   `delta_s`: Seller's liquidity preference (in dollars) - at what discount to the market price would they be indifferent to sale? For owner-occupiers, **narrativize this**, for investors **narrativize this** and reveal the number (the number will be negative, but it should be positive in text, with the direction verbally explained). The description should align with the magnitude of the preference: is it a large or small fraction of the total cost?
+
 
 **Task:**
 
