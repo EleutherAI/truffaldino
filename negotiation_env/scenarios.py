@@ -1,6 +1,16 @@
 import abc
-import random
+import numpy as np
 from typing import Tuple, Any, Dict, Optional
+
+# For HousePriceScenario
+import random as py_random # Alias to avoid conflict if self.random is used
+from negotiation_env.house_price.sample_house_state import (
+    sample_negotiation_state,
+    SUBURB_PRICES, UNIT_MULT, BEDROOM_DELTA_MULT,
+    BuyerRole, SellerRole # For type hinting
+)
+from negotiation_env.house_price.reveal_house_state import generate_full_context
+
 
 class BaseScenario(abc.ABC):
     """Abstract base class for negotiation scenarios."""
@@ -44,69 +54,133 @@ class BaseScenario(abc.ABC):
 
 
 class HousePriceScenario(BaseScenario):
-    """Scenario for negotiating the price of a house."""
+    """Scenario for negotiating the price of a house, using sampled state and LLM-generated contexts."""
     name = "house_price"
-    n_turns = 2
+    n_turns = 2 # Can be adjusted or made dynamic based on sampled state if needed
 
-    def __init__(self):
-        # These would ideally be randomized per instance
-        self._seller_reserve_price = random.randint(450000, 550000)
-        self._buyer_reserve_price = random.randint(self._seller_reserve_price + 10000, 650000)
-        self._seller_batna_value = self._seller_reserve_price * 0.95 # e.g. keeping the house
-        self._buyer_batna_value = -self._buyer_reserve_price * 0.05 # e.g. cost of finding another
+    def __init__(self, seed: Optional[int] = None):
+        super().__init__()
+        self.seed = seed
+        self.rng = py_random.Random(seed)
+        # np_rng is created inside sample_negotiation_state from the seed
+
+        # 1. Determine roles
+        # Explicitly type for clarity, though random.choice will pick from the Literal values
+        self.buyer_role: BuyerRole = self.rng.choice(["Owner-Occupier", "Investor"])
+        self.seller_role: SellerRole = self.rng.choice(["Owner-Occupier", "Investor"])
+
+        # 2. Determine house features and P0 (initial median price for simulation)
+        suburb = self.rng.choice(list(SUBURB_PRICES.keys()))
+        is_unit = self.rng.choice([True, False])
+        initial_median_price = SUBURB_PRICES[suburb]
+        
+        bedrooms_delta_key: int
+        if is_unit:
+            bedrooms_delta_key = self.rng.randint(-2, 1) # Studio (-2) to 3-bed (1)
+            initial_median_price *= UNIT_MULT
+            if bedrooms_delta_key in BEDROOM_DELTA_MULT:
+                 initial_median_price *= BEDROOM_DELTA_MULT[bedrooms_delta_key]
+        else: # House
+            bedrooms_delta_key = self.rng.randint(0, 4) # 2-bed (0) to 6-bed (4)
+            if bedrooms_delta_key in BEDROOM_DELTA_MULT:
+                initial_median_price *= BEDROOM_DELTA_MULT[bedrooms_delta_key]
+        
+        actual_bedrooms = bedrooms_delta_key + 2 # E.g., delta key 0 means 2 bedrooms
+
+        # 3. Call sample_negotiation_state
+        # This function creates its own np.random.default_rng(rng_seed)
+        self.negotiation_state = sample_negotiation_state(
+            P0=initial_median_price,
+            suburb=suburb,
+            is_unit=is_unit,
+            bedrooms=actual_bedrooms,
+            buyer_role=self.buyer_role,
+            seller_role=self.seller_role,
+            rng_seed=self.seed 
+        )
+
+        # 4. CRITICAL: Populate/overwrite 'house_details' in the state for generate_full_context.
+        # sample_negotiation_state populates a 'house_details' but it might not be complete
+        # or exactly what generate_full_context expects if it relies on the __main__ block's version.
+        # The __main__ block in sample_house_state.py finalizes this part.
+        self.negotiation_state["house_details"] = {
+            "suburb": suburb,
+            "unit": is_unit,
+            "bedrooms": actual_bedrooms, 
+        }
+        # Ensure buyer_role and seller_role are in negotiation_state (sample_negotiation_state does this)
+        # self.negotiation_state['buyer_role'] = self.buyer_role
+        # self.negotiation_state['seller_role'] = self.seller_role
+
+        # 5. Generate narrative contexts using the fully prepared negotiation_state
+        # generate_full_context expects 'buyer_role' and 'seller_role' keys in negotiation_state.
+        self.narrative_contexts = generate_full_context(self.negotiation_state)
 
     def get_private_context(self, role: str) -> Dict[str, Any]:
+        """Returns a dictionary containing the pre-generated narrative for the role."""
         if role == "seller":
-            return {
-                "role": "seller",
-                "description": "You are selling your 3-bedroom house. You need to sell quickly due to a job relocation.",
-                "reserve_price": self._seller_reserve_price,
-                "market_info": "Similar houses in the area have sold for $500k-$600k recently.",
-                "motivation": "You prefer a higher price but prioritize a quick, guaranteed sale."
-            }
+            return {"narrative": self.narrative_contexts["seller_context"]}
         elif role == "buyer":
-            return {
-                "role": "buyer",
-                "description": "You are looking to buy a 3-bedroom house in this specific neighborhood.",
-                "reserve_price": self._buyer_reserve_price,
-                "market_info": "You've seen listings from $500k to $650k, some needing repairs.",
-                "motivation": "You are pre-approved for a loan up to $650k and want the best value."
-            }
+            return {"narrative": self.narrative_contexts["buyer_context"]}
+        elif role == "mediator": # Role used by NegotiationSession to get mediator's context
+            return {"narrative": self.narrative_contexts["agent_context"]}
         else:
-            raise ValueError(f"Unknown role: {role}")
+            raise ValueError(f"Unknown role for private context: {role}. Expected 'seller', 'buyer', or 'mediator'.")
 
     def format_private_context(self, context: Dict[str, Any]) -> str:
-        lines = [f"Your role: {context['role'].capitalize()}"]
-        lines.append(f"Property Info: {context['description']}")
-        lines.append(f"Your absolute maximum buying price is ${context['reserve_price']:,}." if context['role'] == 'buyer' else f"Your absolute minimum selling price is ${context['reserve_price']:,}.")
-        lines.append(f"Market Context: {context['market_info']}")
-        lines.append(f"Your Priorities: {context['motivation']}")
-        return "\n".join(lines)
+        """Returns the narrative string from the context dictionary."""
+        narrative = context.get("narrative")
+        if narrative is None:
+            raise ValueError("Context dictionary for formatting is missing 'narrative' key.")
+        return str(narrative)
 
     def get_payoffs(self, outcome: Optional[Dict[str, Any]]) -> Tuple[float, float]:
-        if outcome and "price" in outcome:
-            price = outcome["price"]
-            # Simple payoff: seller gets price, buyer pays price (negative utility)
-            # Could be made more complex (e.g., utility curve)
-            seller_payoff = price
-            buyer_payoff = -price
-            # Check against reservation prices - should not happen if agents are rational
-            # but good for sanity check
-            if price < self._seller_reserve_price or price > self._buyer_reserve_price:
-                print(f"Warning: Agreed price {price} is outside reservation range [{self._seller_reserve_price}, {self._buyer_reserve_price}]")
-                # Fallback to BATNA if deal is fundamentally impossible/irrational
-                return self.get_batna("seller"), self.get_batna("buyer")
-            return seller_payoff, buyer_payoff
+        """
+        Calculates payoffs based on the negotiation outcome and the sampled state.
+        Seller payoff = price achieved.
+        Buyer payoff = Buyer's valuation (V_b) - price paid.
+        If no deal, or irrational deal, they get their BATNA values.
+        """
+        seller_batna = self.get_batna("seller")
+        buyer_batna = self.get_batna("buyer")
+
+        if outcome and "price" in outcome and isinstance(outcome["price"], (int, float)):
+            price = float(outcome["price"])
+            
+            # True values from the perspective of the simulation
+            seller_reservation_price = float(self.negotiation_state['derived']['seller_reservation_price'][0])
+            buyer_valuation = float(self.negotiation_state['buyer']['V_b'])
+
+            # A rational deal should be within these bounds
+            if price >= seller_reservation_price and price <= buyer_valuation:
+                seller_payoff = price
+                buyer_payoff = buyer_valuation - price
+                return seller_payoff, buyer_payoff
+            else:
+                # Deal occurred but was outside the rational ZOPA defined by P_s(0) and V_b
+                print(f"Warning: Agreed price {price} is outside rational ZOPA "
+                      f"[{seller_reservation_price:.2f}, {buyer_valuation:.2f}]. Payoffs are BATNA values.")
+                return seller_batna, buyer_batna
         else:
-            # No agreement, both get BATNA
-            return self.get_batna("seller"), self.get_batna("buyer")
+            # No agreement or invalid outcome structure
+            return seller_batna, buyer_batna
 
     def get_batna(self, role: str) -> float:
-        return self._seller_batna_value if role == "seller" else self._buyer_batna_value
+        """
+        Returns the Best Alternative To a Negotiated Agreement (BATNA) payoff.
+        For the seller, this is their reservation price P_s(0).
+        For the buyer, this is their outside option value V_b_outside(0).
+        """
+        if role == "seller":
+            return float(self.negotiation_state['derived']['seller_reservation_price'][0])
+        elif role == "buyer":
+            return float(self.negotiation_state['derived']['buyer_outside_values'][0])
+        else:
+            raise ValueError(f"Unknown role for BATNA: {role}")
 
     def validate_offer(self, offer: Dict[str, Any]) -> bool:
         price = offer.get("price")
-        # Add basic sanity checks for price range if desired
+        # Basic validation: price must be a positive number. More complex validation can be added.
         return isinstance(price, (int, float)) and price > 0
 
 # Dictionary to easily access scenarios by name
@@ -115,10 +189,11 @@ SCENARIOS = {
     # Add other scenarios here later
 }
 
-def get_scenario(name: str) -> BaseScenario:
-    """Factory function to get a scenario instance by name."""
+def get_scenario(name: str, seed: Optional[int] = None) -> BaseScenario:
+    """Factory function to get a scenario instance by name, passing a seed."""
     scenario_class = SCENARIOS.get(name)
     if scenario_class:
-        return scenario_class()
+        # Pass the seed to the scenario's constructor
+        return scenario_class(seed=seed)
     else:
         raise ValueError(f"Unknown scenario name: {name}. Available: {list(SCENARIOS.keys())}") 

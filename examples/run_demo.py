@@ -83,7 +83,7 @@ def main():
         choices=["house_price"], # Add more choices as scenarios are implemented
         help="Name of the negotiation scenario to run."
     )
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
     args = parser.parse_args()
 
     # --- Setup Logging --- 
@@ -105,7 +105,7 @@ def main():
 
     # --- Initialize Scenario ---
     try:
-        scenario = get_scenario(args.scenario)
+        scenario = get_scenario(args.scenario, seed=args.seed)
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)

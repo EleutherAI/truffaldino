@@ -71,6 +71,8 @@ class NegotiationSession:
             "role": party.role,
             "scenario_name": self.scenario.name,
             "private_context": private_context_str,
+            "instructions": "Your job is to send a message to the agent facilitating the negotiation, along with an action to take."\
+                 " Consider the current offer and the history of the negotiation. You can accept the offer, reject it, or make a counter-offer, and request arbitrary info from the agent or give them information to pass along.",
             "current_offer_price": self.current_offer.get('price') if self.current_offer else None,
             "current_offer_by": self.offer_proposed_by,
             "transcript": self._format_transcript_for_prompt(party_id),
@@ -82,7 +84,13 @@ class NegotiationSession:
         active_party = self._get_party(party_id)
         inactive_party = self._get_party("B" if party_id == "A" else "A")
 
+        # Get mediator's private context from the scenario
+        mediator_private_context_dict = self.scenario.get_private_context("mediator")
+        mediator_private_context_str = self.scenario.format_private_context(mediator_private_context_dict)
+
         context = {
+            "role": "mediator", # Added role for mediator template consistency
+            "private_context": mediator_private_context_str, # Mediator's own private info
             "scenario_name": self.scenario.name,
             "party_A_name": self.party_A.name,
             "party_A_role": self.party_A.role,

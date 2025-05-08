@@ -1,4 +1,4 @@
-You are an expert simulation assistant tasked with creating realistic narrative contexts for participants in a house negotiation simulation. Based on the provided numerical state information and assigned roles, generate detailed background stories for the Buyer, Seller, and their Agent.
+You are a simulation assistant tasked with creating realistic narrative contexts for participants in a house negotiation simulation. Based on the provided numerical state information and assigned roles, generate detailed background stories for the Buyer, Seller, and their Agent.
 
 **Input Data:**
 

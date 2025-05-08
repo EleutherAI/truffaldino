@@ -111,12 +111,11 @@ GAME MASTER:
 """
 import numpy as np
 from scipy.stats import halfnorm, gamma, poisson, norm
-from scipy.optimize import minimize_scalar # Added for optimization
+from scipy.optimize import minimize_scalar
 import random
-from typing import Literal # Added
-from negotiation_env.house_price.reveal_house_state import generate_narrative_contexts # Keep this
+from typing import Literal
+from negotiation_env.house_price.reveal_house_state import generate_narrative_contexts, generate_full_context
 
-# Moved role definitions here
 BuyerRole = Literal["Owner-Occupier", "Investor"]
 SellerRole = Literal["Owner-Occupier", "Investor"]
 
@@ -186,6 +185,8 @@ DEFAULT_BUYER_WAIT_COST_MEAN = 120
 DEFAULT_BUYER_WAIT_COST_STD = 30
 DEFAULT_BUYER_HORIZON_DAYS = 60
 DEFAULT_DT_DAYS = 1
+DEFAULT_SIGMA_IDIOSYNCRATIC_LOG = 0.04 # Std dev for log-price idiosyncratic noise
+R_DAILY_REF_FOR_PATIENCE = 0.05/365 # Reference daily interest rate for patience calc
 
 BEDROOM_DELTA_MULT = {
     -2: 0.77,  # studio / tiny 0-bed
@@ -259,7 +260,11 @@ def simulate_price_process(
         current_time_days = (t_idx + 1) * dt_days
         log_P_bar_t = log_P_bar_0 + g_daily * current_time_days
         d_log_P = kappa_daily * (log_P_bar_t - log_P[t_idx]) * dt_days + sigma_daily * dW[t_idx]
-        log_P[t_idx+1] = log_P[t_idx] + d_log_P
+        log_P_ou = log_P[t_idx] + d_log_P
+
+        # Add idiosyncratic noise to the log price
+        idiosyncratic_noise = rng.normal(0, DEFAULT_SIGMA_IDIOSYNCRATIC_LOG)
+        log_P[t_idx+1] = log_P_ou + idiosyncratic_noise
 
     return np.exp(log_P)
 
@@ -294,27 +299,57 @@ def sample_seller_idiosyncratics(rng: np.random.Generator, seller_role: SellerRo
 def sample_buyer_idiosyncratics(
     P_today: float,
     buyer_role: BuyerRole,
+    lambda_m_daily: float,
+    r_daily: float,
     sigma_delta: float = DEFAULT_SIGMA_DELTA,
     rng: np.random.Generator = np.random.default_rng()
 ) -> dict:
-    """Samples buyer-specific fit premium, costs, and calculates initial valuation, adjusting delta variance based on buyer role."""
-    # Adjust sigma_delta based on buyer role
-    sigma_delta_eff = sigma_delta * P_today
-    if buyer_role == "Owner-Occupier":
-        # Increase variance by 2 (std dev by sqrt(2))
-        # Ensure strictly positive delta
-        delta = abs(rng.normal(0, sigma_delta_eff * np.sqrt(2)))
-    elif buyer_role == "Investor":
-        # Decrease variance by 2 (std dev by sqrt(2))
-        # Ensure strictly positive delta
-        delta = abs(rng.normal(0, sigma_delta_eff / np.sqrt(2)))
-    else: # Should not happen with Literal type hinting
-         raise ValueError(f"Invalid buyer_role: {buyer_role}")
-
+    """
+    Samples buyer-specific costs, dynamic search horizon, fit premium based on simulated search,
+    and calculates initial valuation.
+    """
+    # 1. Sample Buyer's daily cost of waiting
     C_b = rng.normal(DEFAULT_BUYER_WAIT_COST_MEAN, DEFAULT_BUYER_WAIT_COST_STD)
-    C_b = max(0, C_b)
-    V_b = delta + P_today
-    return {"delta": delta, "C_b": C_b, "V_b": V_b}
+    C_b = max(0, C_b) # Ensure non-negative
+
+    # 2. Calculate dynamic search horizon (patience)
+    cost_patience_factor = DEFAULT_BUYER_WAIT_COST_MEAN / (C_b + 1e-6) if C_b > 0 else 2.0
+    rate_patience_factor = R_DAILY_REF_FOR_PATIENCE / (r_daily + 1e-9) if r_daily > 0 else 2.0
+    
+    patience_multiplier = np.sqrt(cost_patience_factor * rate_patience_factor)
+    patience_multiplier = np.clip(patience_multiplier, 0.5, 3.0) 
+    T_search_days = int(DEFAULT_BUYER_HORIZON_DAYS * patience_multiplier)
+    T_search_days = max(1, T_search_days) 
+
+    # 3. Simulate number of houses seen during search horizon
+    expected_houses_seen = lambda_m_daily * T_search_days
+    num_houses_seen = rng.poisson(max(0, expected_houses_seen)) # lam must be >= 0
+
+    # 4. Sample fit premium (delta)
+    sigma_delta_eff = sigma_delta * P_today # Scale std dev of delta by P_today
+    
+    # Adjust sigma_delta_eff variance based on buyer role
+    if buyer_role == "Owner-Occupier":
+        sigma_delta_val_dist = sigma_delta_eff * np.sqrt(2)
+    elif buyer_role == "Investor":
+        sigma_delta_val_dist = sigma_delta_eff / np.sqrt(2)
+    else: # Should not happen
+        raise ValueError(f"Invalid buyer_role: {buyer_role}")
+    sigma_delta_val_dist = max(1e-6, sigma_delta_val_dist) # Ensure positive std dev
+
+    if num_houses_seen > 0:
+        potential_deltas = abs(rng.normal(0, sigma_delta_val_dist, num_houses_seen))
+        delta = np.max(potential_deltas) if potential_deltas.size > 0 else 0.0
+    else:
+        # Fallback: if no houses seen, sample one delta (with role-adjusted sigma)
+        delta = abs(rng.normal(0, sigma_delta_val_dist))
+    
+    delta = max(0, delta) # Ensure delta is non-negative
+
+    # 5. Calculate Buyer's initial valuation
+    V_b = P_today + delta
+
+    return {"delta": delta, "C_b": C_b, "V_b": V_b, "T_search_days_buyer": T_search_days, "num_houses_seen_buyer": num_houses_seen}
 
 def calculate_seller_option_premium(
     P_today: float,
@@ -574,6 +609,9 @@ def optimize_seller_threshold_and_premium(
 
 def sample_negotiation_state(
     P0: float,
+    suburb: str,
+    is_unit: bool,
+    bedrooms: int,
     buyer_role: BuyerRole,
     seller_role: SellerRole,
     rng_seed: int | None = None
@@ -613,7 +651,13 @@ def sample_negotiation_state(
     V_h_eff = V_h - delta_s_abs
 
     # 5. Buyer (depends on buyer role)
-    buyer_params = sample_buyer_idiosyncratics(P_today, buyer_role, rng=rng)
+    buyer_params = sample_buyer_idiosyncratics(
+        P_today,
+        buyer_role,
+        market_params["lambda_m_daily"],
+        market_params["r_daily"],
+        rng=rng
+    )
     V_b = buyer_params["V_b"]
 
     # 6. Compute outside options (using daily rates)
@@ -716,6 +760,9 @@ if __name__ == '__main__':
     # Pass roles to the sampling function
     negotiation_state = sample_negotiation_state(
         initial_median_price,
+        suburb,
+        is_unit,
+        bedrooms,
         buyer_role=buyer_role, # Pass buyer role
         seller_role=seller_role, # Pass seller role
         rng_seed=None
@@ -752,20 +799,12 @@ if __name__ == '__main__':
     # Roles are already assigned above
     print(f"Assigned Roles: Buyer='{buyer_role}', Seller='{seller_role}'")
 
-    try:
-        # Note: generate_narrative_contexts now reads roles from the state dictionary
-        narrative_contexts = generate_narrative_contexts(negotiation_state)
-        print("\n--- Generated Contexts ---")
-        print("\nBuyer Context:\n", narrative_contexts["buyer_context"])
-        print("\nSeller Context:\n", narrative_contexts["seller_context"])
-        print("\nAgent Context:\n", narrative_contexts["agent_context"])
 
-    except ValueError as e:
-        print(f"\nFailed to generate narrative contexts: {e}")
-    except ImportError:
-        print("\nCould not import narrative generation function. Ensure reveal_house_state.py exists.")
-    except Exception as e:
-        print(f"\nAn unexpected error occurred during narrative generation: {e}")
+    narrative_contexts = generate_full_context(negotiation_state)
+    print("\n--- Generated Contexts ---")
+    print("\nBuyer Context:\n", narrative_contexts["buyer_context"])
+    print("\nSeller Context:\n", narrative_contexts["seller_context"])
+    print("\nAgent Context:\n", narrative_contexts["agent_context"])
     # --- End Narrative Context Generation ---
 
 
