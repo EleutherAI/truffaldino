@@ -25,15 +25,9 @@ dependencies = [
 ]
 
 
-[project.scripts]
-# Add command-line scripts here if needed later
-# run-negotiation = "negotiation_env.cli:main"
-
-
-
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["negotiation_env*"]
+include = ["truffaldino*"]
 exclude = ["tests*", "examples*"]
 
 # Development dependencies

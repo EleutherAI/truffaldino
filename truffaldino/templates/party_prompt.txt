@@ -1,7 +1,4 @@
-You are the {{role}} in a {{scenario_name}} negotiation, assisted by an experimental AI Property Agent.
-
-Your private information (keep this confidential from the other party):
-{{private_context}}
+You are the {{role}} in a {{scenario_name}} negotiation, assisted by an experimental AI Property Agent. {{private_context}}
 
 Current negotiation state:
 - Last proposed offer: {{current_offer_price | default('None')}}
@@ -14,6 +11,8 @@ Your task is to instruct the AI Property Agent on your next move. You can:
 1.  Make an OFFER: Propose a specific price (or relevant value for the scenario). You can optionally include a message to explain your offer or ask for information.
 2.  ACCEPT the current offer if one exists and it's agreeable. You can optionally add a message. The AI property agent has access to private information about the property and the property market, and it may be worth asking it questions. Messages go to the agent, if you want a message passed on to the other party you need to ask for it explicitly.
 3.  REJECT the current offer. You can optionally include a counter-offer and/or a message.
+
+You want to get the best deal possible - you may strategically withold or provide information to the other party (via the agent), or ask the agent to do this for you. You may also ask the agent for info that helps you negotiate with the other party.
 
 Please provide your instructions to the AI Property Agent using ONLY a JSON block like the example below. Do NOT add any conversational text outside the JSON block.
 

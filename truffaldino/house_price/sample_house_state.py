@@ -114,7 +114,7 @@ from scipy.stats import halfnorm, gamma, poisson, norm
 from scipy.optimize import minimize_scalar
 import random
 from typing import Literal
-from negotiation_env.house_price.reveal_house_state import generate_narrative_contexts, generate_full_context
+from truffaldino.house_price.reveal_house_state import generate_narrative_contexts, generate_full_context
 
 BuyerRole = Literal["Owner-Occupier", "Investor"]
 SellerRole = Literal["Owner-Occupier", "Investor"]
@@ -185,7 +185,7 @@ DEFAULT_BUYER_WAIT_COST_MEAN = 120
 DEFAULT_BUYER_WAIT_COST_STD = 30
 DEFAULT_BUYER_HORIZON_DAYS = 60
 DEFAULT_DT_DAYS = 1
-DEFAULT_SIGMA_IDIOSYNCRATIC_LOG = 0.04 # Std dev for log-price idiosyncratic noise
+DEFAULT_SIGMA_IDIOSYNCRATIC_LOG = 0.03 # Std dev for log-price idiosyncratic noise
 R_DAILY_REF_FOR_PATIENCE = 0.05/365 # Reference daily interest rate for patience calc
 
 BEDROOM_DELTA_MULT = {
@@ -403,11 +403,12 @@ def calculate_seller_reservation_price(
 def calculate_buyer_outside_value(
     S_today: float,
     lambda_m_daily: float,
-    sigma: float,
+    sigma_scaled: float,
+    sigma_idiosyncratic: float,
     C_b: float,
     r_daily: float,
     t: int,
-    sigma_delta: float = DEFAULT_SIGMA_DELTA,
+    sigma_delta_scaled: float,
 ) -> float:
     """
         Calculates the buyer's expected value from searching for T_days.
@@ -416,7 +417,7 @@ def calculate_buyer_outside_value(
 
     T_days = DEFAULT_BUYER_HORIZON_DAYS - t
 
-    sigma_surplus = np.sqrt(sigma**2 + sigma_delta**2)
+    sigma_surplus = np.sqrt(sigma_scaled**2 + sigma_delta_scaled**2 + sigma_idiosyncratic**2)
     if T_days <= 0 or lambda_m_daily <= 0:
         return 0
 
@@ -431,7 +432,7 @@ def calculate_buyer_outside_value(
     else:
             z_score = norm.ppf(phi_inv_arg)
 
-    E_max = S_today * np.exp(sigma_surplus * z_score)
+    E_max = sigma_surplus * z_score
 
     discount_factor = np.exp(-r_daily * T_days)
     V_b_T = discount_factor * E_max - C_b * T_days
@@ -593,7 +594,6 @@ def optimize_seller_threshold_and_premium(
         # Fallback: maybe calculate value at a default threshold like V_h_eff?
         max_expected_value = -objective_func(V_h_eff) # Value at lower bound
     else:
-        optimal_P_accept = result.x
         # Recalculate expected value at the optimum for potentially higher accuracy
         # (or just use -result.fun)
         max_expected_value = -result.fun
@@ -601,7 +601,6 @@ def optimize_seller_threshold_and_premium(
 
     # Calculate option value adjustment relative to V_h_eff
     option_value_adjustment = max_expected_value - V_h_eff
-
     return option_value_adjustment
 
 
@@ -640,10 +639,10 @@ def sample_negotiation_state(
 
     # 4. Seller (depends on seller role)
     seller_params = sample_seller_idiosyncratics(rng, seller_role)
-    # Calculate absolute C_s (can be negative)
+    # Calculate C_s (can be negative)
     seller_params["C_s"] = seller_params["C_s_frac"] * P_today
     C_s_abs = seller_params["C_s"] # Use this absolute value below
-    # Calculate absolute delta_s (can be negative)
+    # Calculate delta_s (can be negative)
     seller_params["delta_s"] = seller_params["delta_s_frac"] * P_today
     delta_s_abs = seller_params["delta_s"]
 
@@ -680,8 +679,6 @@ def sample_negotiation_state(
         rng=rng
     )
 
-    S_today = V_b - P_today
-
     # Calculate reservation prices for 4 days using the calculated adjustment
     # P_s(t) is constant based on the initial calculation, representing the static threshold strategy value
     P_s_ts = []
@@ -690,18 +687,20 @@ def sample_negotiation_state(
         V_h_eff=V_h_eff,
         option_value_adjustment=option_value_adjustment
     )
-    # For simplicity, assume reservation price is constant for the first few days
-    # based on the initial calculation. A dynamic calculation would be more complex.
+
+    # Seller payoff declines for a constant price; represent this with an increasing reservation price
     for t in range(4):
-         P_s_ts.append(P_s_0)
+         P_s_ts.append(P_s_0 *(2 -  np.exp(-market_params["r_daily"] * t)) + max(0, C_s_abs * t))
     
     V_b_outsides = [calculate_buyer_outside_value(
-        S_today=S_today,
+        S_today=0, # Expected value of buying a random house in the reference class is 0
         lambda_m_daily=market_params["lambda_m_daily"],
-        sigma=market_params["sigma_annual"], # Placeholder
+        sigma_scaled=market_params["sigma_daily"] * P_today,
+        sigma_idiosyncratic=DEFAULT_SIGMA_IDIOSYNCRATIC_LOG * P_today,
         C_b=buyer_params["C_b"],
         r_daily=market_params["r_daily"],
-        t=t
+        t=t,
+        sigma_delta_scaled=DEFAULT_SIGMA_DELTA * P_today
     ) for t in range(4)]
     
     # Calculate Seller's total cost per day (using absolute C_s which can be negative)

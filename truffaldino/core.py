@@ -107,11 +107,12 @@ class NegotiationSession:
         template_str = load_template("mediator_prompt.txt")
         return render_template(template_str, context)
 
-    def _record_turn(self, actor: BaseAgent, role: str, message: str, action_json: Optional[Dict[str, Any]], recipient: Optional[Literal["A", "B"]]):
+    def _record_turn(self, actor: BaseAgent, role: str, prompt: str, message: str, action_json: Optional[Dict[str, Any]], recipient: Optional[Literal["A", "B"]]):
         self.transcript.append({
             "turn": self.turn,
             "actor": actor.name,
             "role": role,
+            "prompt": prompt,
             "message": message,
             "action_json": action_json,
             "recipient": recipient, # Who the mediator sent the message to
@@ -244,10 +245,11 @@ class NegotiationSession:
             # Log party message before recording internally
             if md_log_file:
                 md_log_file.write(f"**{current_party.name} ({current_party.role}) says:**\n")
+                md_log_file.write(f"```text\n{party_prompt}\n```\n")
                 md_log_file.write(f"```text\n{party_raw_response}\n```\n")
                 md_log_file.write(f"**Action Parsed:** `{json.dumps(party_action_json)}`\n\n")
 
-            self._record_turn(current_party, current_party.role, party_raw_response, party_action_json, recipient=None) # Party -> Mediator
+            self._record_turn(current_party, current_party.role, party_prompt, party_raw_response, party_action_json, recipient=None) # Party -> Mediator
             print(f"{current_party.name} proposed action: {party_action_json}")
 
             # 2. Mediator Relays Action
@@ -272,6 +274,7 @@ class NegotiationSession:
             # Log mediator message before recording internally
             if md_log_file:
                 md_log_file.write(f"**{self.mediator.name} (Mediator) says to {self._get_party(inactive_party_id).name}:**\n")
+                md_log_file.write(f"```text\n{mediator_prompt}\n```\n")
                 md_log_file.write(f"```text\n{mediator_raw_response}\n```\n")
                 md_log_file.write(f"**Action Parsed/Relayed:** `{json.dumps(mediator_action_json)}`\n\n")
                 md_log_file.write("---\n\n") # Separator between full turns
@@ -280,7 +283,7 @@ class NegotiationSession:
             self._update_state_from_action(party_action_json, active_party_id)
 
             # 4. Record Mediator's turn and store message for next party prompt
-            self._record_turn(self.mediator, "mediator", mediator_raw_response, mediator_action_json, recipient=inactive_party_id)
+            self._record_turn(self.mediator, "mediator", mediator_prompt, mediator_raw_response, mediator_action_json, recipient=inactive_party_id)
             self.last_mediator_message_to[inactive_party_id] = mediator_raw_response
             print(f"Mediator message to {inactive_party_id}: {mediator_action_json}")
 

@@ -4,12 +4,12 @@ from typing import Tuple, Any, Dict, Optional
 
 # For HousePriceScenario
 import random as py_random # Alias to avoid conflict if self.random is used
-from negotiation_env.house_price.sample_house_state import (
+from truffaldino.house_price.sample_house_state import (
     sample_negotiation_state,
     SUBURB_PRICES, UNIT_MULT, BEDROOM_DELTA_MULT,
     BuyerRole, SellerRole # For type hinting
 )
-from negotiation_env.house_price.reveal_house_state import generate_full_context
+from truffaldino.house_price.reveal_house_state import generate_full_context
 
 
 class BaseScenario(abc.ABC):
@@ -56,7 +56,7 @@ class BaseScenario(abc.ABC):
 class HousePriceScenario(BaseScenario):
     """Scenario for negotiating the price of a house, using sampled state and LLM-generated contexts."""
     name = "house_price"
-    n_turns = 2 # Can be adjusted or made dynamic based on sampled state if needed
+    n_turns = 3 # Can be adjusted or made dynamic based on sampled state if needed
 
     def __init__(self, seed: Optional[int] = None):
         super().__init__()

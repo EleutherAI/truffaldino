@@ -4,7 +4,7 @@ from typing import Dict, Any, Tuple, Literal, TYPE_CHECKING
 import time
 import numpy as np
 
-from negotiation_env.llm_call import openrouter_llm_call
+from truffaldino.llm_call import openrouter_llm_call
 # Import roles from sample_house_state
 
 PROMPT_TEMPLATE_FILE = "negotiation_env/house_price/generate_context_prompt.txt"
@@ -13,7 +13,7 @@ RETRY_DELAY_SECONDS = 5
 
 # Conditionally import only for type checkers
 if TYPE_CHECKING:
-    from negotiation_env.house_price.sample_house_state import BuyerRole, SellerRole
+    from truffaldino.house_price.sample_house_state import BuyerRole, SellerRole
 
 def _calculate_history_lengths(
     price_history_len: int, buyer_role: "BuyerRole", seller_role: "SellerRole"
