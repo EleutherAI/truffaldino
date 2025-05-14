@@ -7,7 +7,7 @@ import numpy as np
 from truffaldino.llm_call import openrouter_llm_call
 # Import roles from sample_house_state
 
-PROMPT_TEMPLATE_FILE = "negotiation_env/house_price/generate_context_prompt.txt"
+PROMPT_TEMPLATE_FILE = "truffaldino/house_price/generate_context_prompt.txt"
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
 

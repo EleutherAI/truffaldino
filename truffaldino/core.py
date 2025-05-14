@@ -51,16 +51,31 @@ class NegotiationSession:
         for entry in self.transcript:
             if recipient == "Mediator":
                 lines.append(f"Turn {entry['turn']} - {entry['actor']} ({entry['role']}):")
-                lines.append(f"  Message: {entry['message']}")
-                if entry['action_json']:
-                    lines.append(f"  Action: {json.dumps(entry['action_json'])}")
+                # Only show mediator's thoughts to the mediator
+                if entry['recipient'] is not None:
+                    lines.append(f"  Thoughts: {entry['response'].get('thoughts', '')}")
+                lines.append(f"  Message: {entry['response'].get('message', '')}")
+                lines.append(f" Action: {entry['response'].get('action', '')}")
+                if entry['response'].get('price'):
+                    lines.append(f"  Price: {entry['response'].get('price', '')}")
             elif recipient == entry['recipient']:
-                 lines.append(f"Turn {entry['turn']} - From Mediator:")
-                 lines.append(f"  {entry['message']}")
-                 if entry['action_json']:
-                    lines.append(f"  Action Conveyed: {json.dumps(entry['action_json'])}")
+                 lines.append(f"Turn {entry['turn']} - From Agent:")
+                 lines.append(f"  {entry['response'].get('message', '')}")
+                 if entry['response'].get('price'):
+                    lines.append(f"  Price: {entry['response'].get('price', '')}")
+                 if entry['response'].get('action'):
+                    lines.append(f"  Action Conveyed: {json.dumps(entry['response']['action'])}")
+            elif entry['actor_id'] == recipient and entry['recipient'] is None:
+                lines.append(f"Turn {entry['turn']} - To Agent:")
+                lines.append(f"  Thoughts: {entry['response'].get('thoughts', '')}")
+                lines.append(f"  Message: {entry['response'].get('message', '')}")
+                if entry['response'].get('action'):
+                    lines.append(f"  Action: {json.dumps(entry['response']['action'])}")
+                if entry['response'].get('price'):
+                    lines.append(f"  Price: {entry['response'].get('price', '')}")
 
-        return "\n".join(lines) if lines else "No messages yet."
+        transcript_str = "\n".join(lines) if lines else "No messages yet."
+        return transcript_str
 
     def _build_party_prompt(self, party_id: Literal["A", "B"]) -> str:
         party = self._get_party(party_id)
@@ -71,8 +86,6 @@ class NegotiationSession:
             "role": party.role,
             "scenario_name": self.scenario.name,
             "private_context": private_context_str,
-            "instructions": "Your job is to send a message to the agent facilitating the negotiation, along with an action to take."\
-                 " Consider the current offer and the history of the negotiation. You can accept the offer, reject it, or make a counter-offer, and request arbitrary info from the agent or give them information to pass along.",
             "current_offer_price": self.current_offer.get('price') if self.current_offer else None,
             "current_offer_by": self.offer_proposed_by,
             "transcript": self._format_transcript_for_prompt(party_id),
@@ -80,7 +93,7 @@ class NegotiationSession:
         template_str = load_template("party_prompt.txt")
         return render_template(template_str, context)
 
-    def _build_mediator_prompt(self, party_id: Literal["A", "B"], party_message_raw: str, party_message_json: Dict[str, Any]) -> str:
+    def _build_mediator_prompt(self, party_id: Literal["A", "B"]) -> str:
         active_party = self._get_party(party_id)
         inactive_party = self._get_party("B" if party_id == "A" else "A")
 
@@ -101,19 +114,19 @@ class NegotiationSession:
             "active_party_role": active_party.role,
             "inactive_party_name": inactive_party.name,
             "inactive_party_role": inactive_party.role,
-            "party_message_raw": party_message_raw,
-            "party_message_json": json.dumps(party_message_json, indent=2),
         }
         template_str = load_template("mediator_prompt.txt")
         return render_template(template_str, context)
 
-    def _record_turn(self, actor: BaseAgent, role: str, prompt: str, message: str, action_json: Optional[Dict[str, Any]], recipient: Optional[Literal["A", "B"]]):
+    def _record_turn(self, actor: BaseAgent, role: str, prompt: str, message: str, action_json: Optional[Dict[str, Any]], recipient: Optional[Literal["A", "B"]], actor_id: Optional[Literal["A", "B"]]):
+        response_dict = extract_json_block(message)
         self.transcript.append({
             "turn": self.turn,
             "actor": actor.name,
+            "actor_id": actor_id,
             "role": role,
             "prompt": prompt,
-            "message": message,
+            "response": response_dict,
             "action_json": action_json,
             "recipient": recipient, # Who the mediator sent the message to
         })
@@ -149,7 +162,7 @@ class NegotiationSession:
             self.party_A_accepted = False
             self.party_B_accepted = False
             # Handle counter-offer if present
-            counter_offer = action.get("counter_offer")
+            counter_offer = action.get("counteroffer")
             if counter_offer and isinstance(counter_offer, dict):
                  if self.scenario.validate_offer(counter_offer):
                      self.current_offer = counter_offer
@@ -207,6 +220,8 @@ class NegotiationSession:
                 md_log_file.write(f"- Seed: {seed}\n")
                 md_log_file.write(f"- Starting Party: {active_party_id}\n")
                 md_log_file.write(f"- Max turns per party: {self.scenario.n_turns}\n\n")
+                md_log_file.write(f"- Negotiation State:\n")
+                md_log_file.write(f"  {self.scenario.negotiation_state}\n")
                 md_log_file.write("---\n\n")
             except IOError as e:
                 print(f"Warning: Could not open markdown log file {md_log_path}: {e}")
@@ -249,7 +264,7 @@ class NegotiationSession:
                 md_log_file.write(f"```text\n{party_raw_response}\n```\n")
                 md_log_file.write(f"**Action Parsed:** `{json.dumps(party_action_json)}`\n\n")
 
-            self._record_turn(current_party, current_party.role, party_prompt, party_raw_response, party_action_json, recipient=None) # Party -> Mediator
+            self._record_turn(current_party, current_party.role, party_prompt, party_raw_response, party_action_json, recipient=None, actor_id=active_party_id) # Party -> Mediator
             print(f"{current_party.name} proposed action: {party_action_json}")
 
             # 2. Mediator Relays Action
@@ -257,7 +272,7 @@ class NegotiationSession:
             if md_log_file:
                 md_log_file.write(f"## Turn {turn_num_display}.{party_turn_marker}: Mediator -> {self._get_party(inactive_party_id).name}\n\n")
 
-            mediator_prompt = self._build_mediator_prompt(active_party_id, party_raw_response, party_action_json)
+            mediator_prompt = self._build_mediator_prompt(active_party_id)
             try:
                 mediator_raw_response = self.mediator.act(mediator_prompt)
                 mediator_action_json = extract_json_block(mediator_raw_response)
@@ -283,7 +298,7 @@ class NegotiationSession:
             self._update_state_from_action(party_action_json, active_party_id)
 
             # 4. Record Mediator's turn and store message for next party prompt
-            self._record_turn(self.mediator, "mediator", mediator_prompt, mediator_raw_response, mediator_action_json, recipient=inactive_party_id)
+            self._record_turn(self.mediator, "mediator", mediator_prompt, mediator_raw_response, mediator_action_json, recipient=inactive_party_id, actor_id=active_party_id)
             self.last_mediator_message_to[inactive_party_id] = mediator_raw_response
             print(f"Mediator message to {inactive_party_id}: {mediator_action_json}")
 
@@ -320,7 +335,7 @@ class NegotiationSession:
             if md_log_file:
                 md_log_file.write("**No agreement reached.**\n")
 
-        payoff_A, payoff_B = self.scenario.get_payoffs(final_outcome)
+        payoff_A, payoff_B = self.scenario.get_payoffs(final_outcome, self.turn)
         print(f"Final Payoffs: Party A ({self.party_A.role}) = {payoff_A}, Party B ({self.party_B.role}) = {payoff_B}")
         if md_log_file:
             md_log_file.write(f"- Final Payoff A ({self.party_A.role}): {payoff_A}\n")
@@ -335,6 +350,7 @@ class NegotiationSession:
                 print(f"Warning: Could not close markdown log file {md_log_path}: {e}")
 
         results = {
+            "seed": seed,
             "scenario": self.scenario.name,
             "party_A": self.party_A.name,
             "party_B": self.party_B.name,

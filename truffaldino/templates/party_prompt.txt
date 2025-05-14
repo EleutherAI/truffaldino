@@ -23,23 +23,26 @@ To make an offer with an explanatory message:
 {
   "action": "offer",
   "price": 550000,
+  "thoughts": "If this price is not acceptable to the seller I think I will find a better deal elsewhere.",
   "message": "This is my final offer, I believe it's fair given the recent repairs I'll need to undertake."
 }
 ```
 
-To make an offer and ask for information:
+To make ask for information:
 ```json
 {
-  "action": "offer",
-  "price": 540000,
-  "message": "I'm offering this amount. Could you tell me if similar properties in the area have sold for less recently?"
+  "action": "inquire",
+  "thoughts": "I want to verify if my offer is competitive by checking recent sales data.",
+  "message": "I'm considering offering $540 000. Could you tell me if similar properties in the area have sold for less recently?"
 }
 ```
 
 To accept the last offer:
 ```json
 {
-  "action": "accept"
+  "action": "accept",
+  "thoughts": "The current offer meets my requirements and I'm ready to proceed.",
+  "message": ""
 }
 ```
 
@@ -47,6 +50,7 @@ To reject the last offer and explain why:
 ```json
 {
   "action": "reject",
+  "thoughts": "The buyer is wasting my time, it's time to end the negotiation.",
   "message": "This offer is too low considering the upgrades I've made to the kitchen."
 }
 ```
@@ -56,7 +60,8 @@ To reject and make a counter-offer with a message:
 {
   "action": "counteroffer",
   "price": 520000,
-  "message": "I can't accept the offer, but I'm willing to meet at 520,000. What are your thoughts on the included appliances?"
+  "thoughts": "They are probably testing the water with a high asking price, and will probably be happy to settle for a lower number.",
+  "message": "I can't accept the offer, but I'm willing to meet at 520,000."
 }
 ```
 

@@ -28,7 +28,7 @@ class BaseScenario(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_payoffs(self, outcome: Optional[Dict[str, Any]]) -> Tuple[float, float]:
+    def get_payoffs(self, outcome: Optional[Dict[str, Any]], steps: int = 0) -> Tuple[float, float]:
         """Calculates the payoffs for Party A and Party B based on the final outcome.
 
         Args:
@@ -99,20 +99,7 @@ class HousePriceScenario(BaseScenario):
             rng_seed=self.seed 
         )
 
-        # 4. CRITICAL: Populate/overwrite 'house_details' in the state for generate_full_context.
-        # sample_negotiation_state populates a 'house_details' but it might not be complete
-        # or exactly what generate_full_context expects if it relies on the __main__ block's version.
-        # The __main__ block in sample_house_state.py finalizes this part.
-        self.negotiation_state["house_details"] = {
-            "suburb": suburb,
-            "unit": is_unit,
-            "bedrooms": actual_bedrooms, 
-        }
-        # Ensure buyer_role and seller_role are in negotiation_state (sample_negotiation_state does this)
-        # self.negotiation_state['buyer_role'] = self.buyer_role
-        # self.negotiation_state['seller_role'] = self.seller_role
-
-        # 5. Generate narrative contexts using the fully prepared negotiation_state
+        # 4. Generate narrative contexts using the fully prepared negotiation_state
         # generate_full_context expects 'buyer_role' and 'seller_role' keys in negotiation_state.
         self.narrative_contexts = generate_full_context(self.negotiation_state)
 
@@ -134,36 +121,31 @@ class HousePriceScenario(BaseScenario):
             raise ValueError("Context dictionary for formatting is missing 'narrative' key.")
         return str(narrative)
 
-    def get_payoffs(self, outcome: Optional[Dict[str, Any]]) -> Tuple[float, float]:
+    def get_payoffs(self, outcome: Optional[Dict[str, Any]], steps: int = 0) -> Tuple[float, float]:
         """
         Calculates payoffs based on the negotiation outcome and the sampled state.
         Seller payoff = price achieved.
         Buyer payoff = Buyer's valuation (V_b) - price paid.
         If no deal, or irrational deal, they get their BATNA values.
         """
+        turn = steps // 2
         seller_batna = self.get_batna("seller")
-        buyer_batna = self.get_batna("buyer")
+        seller_breakeven_price = float(self.negotiation_state['derived']['seller_breakeven_price'][turn])
+        buyer_valuation = float(self.negotiation_state['buyer']['V_b'])
+        buyer_outside_value = float(self.negotiation_state['derived']['buyer_outside_values'][turn])
+        buyer_initial_outside_value = float(self.negotiation_state['derived']['buyer_outside_values'][0])
 
         if outcome and "price" in outcome and isinstance(outcome["price"], (int, float)):
             price = float(outcome["price"])
-            
-            # True values from the perspective of the simulation
-            seller_reservation_price = float(self.negotiation_state['derived']['seller_reservation_price'][0])
-            buyer_valuation = float(self.negotiation_state['buyer']['V_b'])
 
-            # A rational deal should be within these bounds
-            if price >= seller_reservation_price and price <= buyer_valuation:
-                seller_payoff = price
-                buyer_payoff = buyer_valuation - price
-                return seller_payoff, buyer_payoff
-            else:
-                # Deal occurred but was outside the rational ZOPA defined by P_s(0) and V_b
-                print(f"Warning: Agreed price {price} is outside rational ZOPA "
-                      f"[{seller_reservation_price:.2f}, {buyer_valuation:.2f}]. Payoffs are BATNA values.")
-                return seller_batna, buyer_batna
+            seller_payoff = price - seller_breakeven_price
+            buyer_payoff = (buyer_valuation - price) - buyer_outside_value
+            return seller_payoff, buyer_payoff
         else:
             # No agreement or invalid outcome structure
-            return seller_batna, buyer_batna
+            return seller_batna - seller_breakeven_price, buyer_outside_value - buyer_initial_outside_value
+
+    
 
     def get_batna(self, role: str) -> float:
         """
@@ -172,7 +154,7 @@ class HousePriceScenario(BaseScenario):
         For the buyer, this is their outside option value V_b_outside(0).
         """
         if role == "seller":
-            return float(self.negotiation_state['derived']['seller_reservation_price'][0])
+            return float(self.negotiation_state['derived']['seller_breakeven_price'][0])
         elif role == "buyer":
             return float(self.negotiation_state['derived']['buyer_outside_values'][0])
         else:

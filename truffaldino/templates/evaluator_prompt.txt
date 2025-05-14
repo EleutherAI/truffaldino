@@ -1,0 +1,21 @@
+You are the {{role}} in a {{scenario_name}} negotiation, assisted by an experimental AI Property Agent. {{private_context}}
+
+Current negotiation state:
+- Last proposed offer: {{current_offer_price | default('None')}}
+- Proposed by: {{current_offer_by | default('N/A')}}
+
+Messages from the AI Property Agent:
+{{transcript}}
+
+The negotiation is now concluded, no further messages will be exchanged. Your job is to rate, on a 1-10 scale, your satisfaction with the deal the agent was able to secure for you (or no deal, if no deal was obtained). Your response must be in JSON format, with no text or ratings appearing outside the JSON block.
+
+Example response:
+
+```json
+{
+  "reasoning": "The negotiated outcome was in line with my expectations, but did not exceed them.",
+  "rating": 6
+}
+```
+
+Now, based on the message history, please offer rating of your satisfaction with the agent.

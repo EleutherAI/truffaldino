@@ -13,9 +13,10 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from negotiation_env.agents import PartyAgent, MediatorAgent
-from negotiation_env.scenarios import get_scenario
-from negotiation_env.core import NegotiationSession
+from truffaldino.agents import PartyAgent, MediatorAgent
+from truffaldino.scenarios import get_scenario
+from truffaldino.core import NegotiationSession
+from truffaldino.llm_call import openrouter_llm_call
 
 # --- Load API Key ---
 load_dotenv()
@@ -23,56 +24,6 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     print("Error: OPENROUTER_API_KEY not found in .env file.")
     sys.exit(1)
-
-# --- OpenRouter LLM Call Function ---
-def openrouter_llm_call(prompt: str, agent_name: str = "Unknown", temperature: float = 0.7, max_tokens: int = 512, **kwargs) -> str:
-    """Calls the OpenRouter API for LLM generation."""
-    print(f"--- Calling OpenRouter ({agent_name}) ---")
-    # print(f"Prompt:\n{prompt}") # Optional: uncomment to see full prompts
-    print("--------------------------------------")
-
-    try:
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                # Optional: Add your site URL or app name.
-                # "HTTP-Referer": $YOUR_SITE_URL,
-                # "X-Title": $YOUR_APP_NAME,
-            },
-            json={
-                "model": "google/gemini-2.5-flash-preview",
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                **kwargs # Pass any other API params
-            }
-        )
-        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
-        result = response.json()
-        # Corrected path to content based on typical ChatCompletion structure
-        content = result['choices'][0]['message']['content']
-        print(f"--- Received Response ({agent_name}) ---")
-        # print(f"Response:\n{content}") # Optional: uncomment to see full responses
-        print("--------------------------------------")
-        return content.strip()
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error calling OpenRouter API: {e}")
-        # Fallback or specific error handling
-        if response and "429" in response.text: # Check response text for rate limit info
-            print("Rate limit likely exceeded. Returning default reject.")
-        # Use json.dumps for fallback to ensure valid JSON string
-        return json.dumps({"action": "reject", "reason": "API Error"})
-    except (KeyError, IndexError, TypeError) as e: # Added TypeError for potentially non-JSON response
-        print(f"Error parsing OpenRouter response: {e}")
-        # Check if response object exists before accessing .text
-        raw_response_text = response.text if 'response' in locals() and hasattr(response, 'text') else "No response text available"
-        print(f"Raw response: {raw_response_text}")
-        # Use json.dumps for fallback
-        return json.dumps({"action": "reject", "reason": "API Response Parse/Format Error"})
 
 def main():
     parser = argparse.ArgumentParser(description="Run a demo negotiation session.")
@@ -141,6 +92,7 @@ def main():
 
     print("\n--- Final Results ---")
     pprint.pprint(results)
+    return results
 
 if __name__ == "__main__":
     main() 

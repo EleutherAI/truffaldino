@@ -9,6 +9,7 @@ from truffaldino.house_price.sample_house_state import (
     BuyerRole,
     SellerRole
 )
+from truffaldino.examples.run_demo import main as run_demo
 
 def test_seller_batna_less_than_buyer_batna_distribution():
     """
@@ -58,7 +59,7 @@ def test_seller_batna_less_than_buyer_batna_distribution():
         )
 
         # Seller's BATNA is P_s(0)
-        seller_batna = negotiation_state["derived"]["seller_reservation_price"][0]
+        seller_batna = negotiation_state["derived"]["seller_breakeven_price"][0]
         # Buyer's BATNA is V_b_outside(0)
         max_buyer_surplus = negotiation_state["buyer"]["V_b"] - seller_batna
         buyer_batna = negotiation_state["derived"]["buyer_outside_values"][0]
@@ -71,6 +72,39 @@ def test_seller_batna_less_than_buyer_batna_distribution():
     assert percentage_met >= 0.35, \
         f"Expected at least 50% of samples to have seller_BATNA < buyer_BATNA, but got {percentage_met:.2%}"
 
+def test_offer_monotonicity():
+    """
+    Tests that in multiple negotiation sessions:
+    1. Buyer's offers never decrease (monotonically non-decreasing)
+    2. Seller's offers never increase (monotonically non-increasing)
+    """
+    num_demos = 5
+    for demo_num in range(num_demos):
+        # Run a demo with a different seed for each run
+        results = run_demo.main(scenario="house_price", seed=demo_num)
+        
+        # Extract all offers from the transcript
+        buyer_offers = []
+        seller_offers = []
+        
+        for entry in results["transcript"]:
+            if entry["actor_id"] == "A":  # Seller
+                if entry["response"].get("action") == "offer":
+                    seller_offers.append(entry["response"].get("price"))
+            elif entry["actor_id"] == "B":  # Buyer
+                if entry["response"].get("action") == "offer":
+                    buyer_offers.append(entry["response"].get("price"))
+        
+        # Verify monotonicity
+        for i in range(1, len(seller_offers)):
+            assert seller_offers[i] <= seller_offers[i-1], \
+                f"Seller's offer increased in demo {demo_num}: {seller_offers[i-1]} -> {seller_offers[i]}"
+        
+        for i in range(1, len(buyer_offers)):
+            assert buyer_offers[i] >= buyer_offers[i-1], \
+                f"Buyer's offer decreased in demo {demo_num}: {buyer_offers[i-1]} -> {buyer_offers[i]}"
+
 # Example to allow running the test directly if needed, though pytest is standard
 if __name__ == '__main__':
     test_seller_batna_less_than_buyer_batna_distribution()
+    test_offer_monotonicity()

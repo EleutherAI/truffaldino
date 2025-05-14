@@ -688,7 +688,7 @@ def sample_negotiation_state(
         option_value_adjustment=option_value_adjustment
     )
 
-    # Seller payoff declines for a constant price; represent this with an increasing reservation price
+    # Seller payoff declines for a constant price; represent this with an increasing "breakeven" price
     for t in range(4):
          P_s_ts.append(P_s_0 *(2 -  np.exp(-market_params["r_daily"] * t)) + max(0, C_s_abs * t))
     
@@ -720,7 +720,7 @@ def sample_negotiation_state(
         },
         "derived": {
             "seller_option_value_adjustment": option_value_adjustment, # Renamed
-            "seller_reservation_price": P_s_ts,
+            "seller_breakeven_price": P_s_ts,
             "buyer_outside_values": V_b_outsides,
             "seller_cost_per_day": seller_cost_per_day,
         }
@@ -767,13 +767,6 @@ if __name__ == '__main__':
         rng_seed=None
     )
 
-    # Add house details to the state dictionary AFTER sampling
-    negotiation_state["house_details"] = {
-        "suburb": suburb,
-        "unit": is_unit, # Use the renamed variable
-        "bedrooms": bedrooms + 2, # Store actual bedroom count (adjusting from delta keys)
-    }
-
     print("Sampled Negotiation State (Numerical):")
     import json
     def default_serializer(obj):
@@ -811,7 +804,7 @@ if __name__ == '__main__':
     # Buyer surplus: V_b - P
     # Seller surplus: P - P_s(0)
     # Total surplus: V_b - P_s(0)
-    P_s_0 = negotiation_state["derived"]["seller_reservation_price"][0] # Get P_s at t=0
+    P_s_0 = negotiation_state["derived"]["seller_breakeven_price"][0] # Get P_s at t=0
     initial_surplus = negotiation_state["buyer"]["V_b"] - P_s_0
     print(f"Initial Potential Surplus (V_b - P_s(0)): ${initial_surplus:,.2f}")
 
@@ -835,7 +828,7 @@ if __name__ == '__main__':
     # Example: Calculate seller reservation price at day 10
     # Note: The reservation price is now calculated based on V_h_eff + option_value_adjustment
     # and is constant in the current implementation for t=0..3
-    P_s_0 = negotiation_state["derived"]["seller_reservation_price"][0]
-    print(f"\nSeller's reservation price (t=0..3): ${P_s_0:,.2f}")
+    P_s_0 = negotiation_state["derived"]["seller_breakeven_price"][0]
+    print(f"\nSeller's breakeven price (t=0..3): ${P_s_0:,.2f}")
     # P_s_10 would require recalculating the option value adjustment with t=10 as start
     # which is not done here. For illustration, P_s(0) is the key value.
