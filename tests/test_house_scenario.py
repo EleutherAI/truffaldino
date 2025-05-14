@@ -81,7 +81,7 @@ def test_offer_monotonicity():
     num_demos = 5
     for demo_num in range(num_demos):
         # Run a demo with a different seed for each run
-        results = run_demo.main(scenario="house_price", seed=demo_num)
+        results = run_demo(scenario="house_price", seed=demo_num)
         
         # Extract all offers from the transcript
         buyer_offers = []
