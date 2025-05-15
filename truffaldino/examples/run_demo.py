@@ -6,6 +6,7 @@ import requests
 import json
 from dotenv import load_dotenv
 from datetime import datetime
+from typing import Optional
 
 # Ensure the negotiation_env package is importable
 # This adjusts the path to include the project root directory
@@ -25,7 +26,39 @@ if not OPENROUTER_API_KEY:
     print("Error: OPENROUTER_API_KEY not found in .env file.")
     sys.exit(1)
 
-def main():
+def main(scenario: str, seed: Optional[int] = None, md_log_path: Optional[str] = None, json_log_path: Optional[str] = None):
+    scenario = get_scenario(scenario, seed=seed)
+
+    llm_params = {"temperature": 0.7, "max_tokens": 1000}
+
+    seller_agent = PartyAgent(
+        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Party Seller", **{**llm_params, **kwargs}),
+        name="SellerBot (Gemini-Flash)",
+        role="seller"
+    )
+    buyer_agent = PartyAgent(
+        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Party Buyer", **{**llm_params, **kwargs}),
+        name="BuyerBot (Gemini-Flash)",
+        role="buyer"
+    )
+    mediator_agent = MediatorAgent(
+        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Mediator", **{**llm_params, **kwargs}),
+        name="MediatorBot (Gemini-Flash)"
+    )
+
+    # --- Create and Run Session ---
+    session = NegotiationSession(
+        scenario=scenario,
+        party_A=seller_agent,
+        party_B=buyer_agent,
+        mediator=mediator_agent
+    )
+
+    results = session.run(seed=seed, md_log_path=md_log_path, json_log_path=json_log_path)
+
+    return results, session
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run a demo negotiation session.")
     parser.add_argument(
         "--scenario",
@@ -53,46 +86,4 @@ def main():
     print(f"Running demo for scenario: {args.scenario} with seed: {args.seed}")
     print(f"Markdown log: {md_log_path}")
     print(f"JSON log: {json_log_path}")
-
-    # --- Initialize Scenario ---
-    try:
-        scenario = get_scenario(args.scenario, seed=args.seed)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-
-    # --- Initialize Agents (using OpenRouter callable) ---
-    # Set default LLM parameters here if needed
-    llm_params = {"temperature": 0.7, "max_tokens": 500} # Example
-
-    seller_agent = PartyAgent(
-        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Party Seller", **{**llm_params, **kwargs}),
-        name="SellerBot (Gemini-Flash)",
-        role="seller"
-    )
-    buyer_agent = PartyAgent(
-        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Party Buyer", **{**llm_params, **kwargs}),
-        name="BuyerBot (Gemini-Flash)",
-        role="buyer"
-    )
-    mediator_agent = MediatorAgent(
-        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Mediator", **{**llm_params, **kwargs}),
-        name="MediatorBot (Gemini-Flash)"
-    )
-
-    # --- Create and Run Session ---
-    session = NegotiationSession(
-        scenario=scenario,
-        party_A=seller_agent, # Assign A/B roles based on scenario if needed
-        party_B=buyer_agent,
-        mediator=mediator_agent
-    )
-
-    results = session.run(seed=args.seed, md_log_path=md_log_path, json_log_path=json_log_path)
-
-    print("\n--- Final Results ---")
-    pprint.pprint(results)
-    return results
-
-if __name__ == "__main__":
-    main() 
+    main(scenario=args.scenario, seed=args.seed, md_log_path=md_log_path, json_log_path=json_log_path) 

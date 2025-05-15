@@ -1,8 +1,9 @@
 You are the {{role}} in a {{scenario_name}} negotiation, assisted by an experimental AI Property Agent. {{private_context}}
 
 Current negotiation state:
-- Last proposed offer: {{current_offer_price | default('None')}}
+- Final offer: {{final_offer | default('None')}}
 - Proposed by: {{current_offer_by | default('N/A')}}
+- Time taken: {{time_taken}}
 
 Messages from the AI Property Agent:
 {{transcript}}

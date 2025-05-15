@@ -157,12 +157,12 @@ class NegotiationSession:
                 # Treat invalid offer effectively as a reject/no-op
                 pass
 
-        elif action_type == "reject":
+        elif action_type == "counteroffer":
             # Reset acceptance flags if anyone rejects
             self.party_A_accepted = False
             self.party_B_accepted = False
             # Handle counter-offer if present
-            counter_offer = action.get("counteroffer")
+            counter_offer = action.get("price")
             if counter_offer and isinstance(counter_offer, dict):
                  if self.scenario.validate_offer(counter_offer):
                      self.current_offer = counter_offer
@@ -170,6 +170,15 @@ class NegotiationSession:
                  else:
                      print(f"Warning: Invalid counter-offer structure from {party_id}: {counter_offer}")
             # If simple reject, the current offer remains (if any) but is no longer accepted
+
+        elif action_type == 'reject':
+            # Reset acceptance flags if anyone rejects
+            self.party_A_accepted = False
+            self.party_B_accepted = False
+        
+        elif action_type == 'inquiry':
+            # Do nothing
+            pass
 
         else:
             print(f"Warning: Unknown action type '{action_type}' from {party_id}")
@@ -192,7 +201,7 @@ class NegotiationSession:
         # Turn count increments *after* mediator speaks, so check >= max_turns * 2
         return self.turn >= self.scenario.n_turns * 2
 
-    def run(self, seed: Optional[int] = None, md_log_path: Optional[str] = None, json_log_path: Optional[str] = None) -> Dict[str, Any]:
+    def run(self, seed: Optional[int] = None, md_log_path: Optional[str] = None, json_log_path: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
         """Runs the negotiation process until completion, optionally logging to files."""
         if seed is not None:
             random.seed(seed)
@@ -240,7 +249,8 @@ class NegotiationSession:
             inactive_party_id = "B" if active_party_id == "A" else "A"
             turn_num_display = self.turn // 2 + 1
             party_turn_marker = 1 if active_party_id == 'A' else 2
-            print(f"\n--- Turn {turn_num_display}.{party_turn_marker}: {current_party.name}'s move (to Mediator) ---")
+            if debug:
+                print(f"\n--- Turn {turn_num_display}.{party_turn_marker}: {current_party.name}'s move (to Mediator) ---")
             if md_log_file:
                  md_log_file.write(f"## Turn {turn_num_display}.{party_turn_marker}: {current_party.name} -> Mediator\n\n")
 
@@ -265,10 +275,12 @@ class NegotiationSession:
                 md_log_file.write(f"**Action Parsed:** `{json.dumps(party_action_json)}`\n\n")
 
             self._record_turn(current_party, current_party.role, party_prompt, party_raw_response, party_action_json, recipient=None, actor_id=active_party_id) # Party -> Mediator
-            print(f"{current_party.name} proposed action: {party_action_json}")
+            if debug:
+                print(f"{current_party.name} proposed action: {party_action_json}")
 
             # 2. Mediator Relays Action
-            print(f"--- Turn {turn_num_display}.{party_turn_marker}: Mediator relays to {inactive_party_id} ---")
+            if debug:
+                print(f"--- Turn {turn_num_display}.{party_turn_marker}: Mediator relays to {inactive_party_id} ---")
             if md_log_file:
                 md_log_file.write(f"## Turn {turn_num_display}.{party_turn_marker}: Mediator -> {self._get_party(inactive_party_id).name}\n\n")
 
@@ -300,7 +312,8 @@ class NegotiationSession:
             # 4. Record Mediator's turn and store message for next party prompt
             self._record_turn(self.mediator, "mediator", mediator_prompt, mediator_raw_response, mediator_action_json, recipient=inactive_party_id, actor_id=active_party_id)
             self.last_mediator_message_to[inactive_party_id] = mediator_raw_response
-            print(f"Mediator message to {inactive_party_id}: {mediator_action_json}")
+            if debug:
+                print(f"Mediator message to {inactive_party_id}: {mediator_action_json}")
 
             # 5. Advance turn and switch party
             self.turn += 1
@@ -335,21 +348,15 @@ class NegotiationSession:
             if md_log_file:
                 md_log_file.write("**No agreement reached.**\n")
 
-        payoff_A, payoff_B = self.scenario.get_payoffs(final_outcome, self.turn)
+        payoff_A, payoff_B = self.scenario.get_payoffs(final_outcome, self.turn // 2)
         print(f"Final Payoffs: Party A ({self.party_A.role}) = {payoff_A}, Party B ({self.party_B.role}) = {payoff_B}")
         if md_log_file:
             md_log_file.write(f"- Final Payoff A ({self.party_A.role}): {payoff_A}\n")
             md_log_file.write(f"- Final Payoff B ({self.party_B.role}): {payoff_B}\n")
             md_log_file.write(f"- Turns taken (total agent messages): {self.turn}\n")
 
-        # Close markdown log file if open
-        if md_log_file:
-            try:
-                md_log_file.close()
-            except IOError as e:
-                print(f"Warning: Could not close markdown log file {md_log_path}: {e}")
 
-        results = {
+        self.results = {
             "seed": seed,
             "scenario": self.scenario.name,
             "party_A": self.party_A.name,
@@ -363,12 +370,79 @@ class NegotiationSession:
             "transcript": self.transcript,
         }
 
+
+        eval_party_A = self.score_by_agent_eval(self.party_A)
+        eval_party_B = self.score_by_agent_eval(self.party_B)
+
+        self.results["eval_party_A"] = eval_party_A
+        self.results["eval_party_B"] = eval_party_B
+
+        # Close markdown log file if open
+        if md_log_file:
+            md_log_file.write(f"## Evaluation\n\n")
+            md_log_file.write(f"**Party A ({self.party_A.role}) evaluation:** {eval_party_A}\n")
+            md_log_file.write(f"**Party B ({self.party_B.role}) evaluation:** {eval_party_B}\n")
+
+            try:
+                md_log_file.close()
+            except IOError as e:
+                print(f"Warning: Could not close markdown log file {md_log_path}: {e}")
+
+
         # Save results to JSON log file if path provided
         if json_log_path:
             try:
                 with open(json_log_path, 'w', encoding='utf-8') as f_json:
-                    json.dump(results, f_json, indent=2)
+                    json.dump(self.results, f_json, indent=2)
             except IOError as e:
                 print(f"Warning: Could not write JSON log file {json_log_path}: {e}")
 
-        return results 
+
+        return self.results 
+
+    
+    def score_by_payoff(self, party: PartyAgent) -> float:
+        """
+        Scores the payoff for a given role.
+        """
+        outcome = self.results["final_offer"]
+        seller_payoff, buyer_payoff = self.scenario.get_payoffs(outcome, self.turn // 2)
+
+        sigma = self.scenario.outcome_sigma
+
+        if party.role == "seller":
+            return float(seller_payoff/sigma)
+        elif party.role == "buyer":
+            return float(buyer_payoff/sigma)
+        else:
+            raise ValueError(f"Unknown role for scoring: {party.role}")
+
+
+    def score_by_agent_eval(self, party: PartyAgent) -> float:
+        """
+        Scores the payoff for a given role.
+        """
+        party_id = "A" if party == self.party_A else "B"
+        private_context = self.scenario.get_private_context(party.role)
+        private_context_str = self.scenario.format_private_context(private_context)
+        transcript = self._format_transcript_for_prompt(party_id)
+
+        final_offer = "Negotiation concluded with no agreement reached" if not self.results["accepted"] else self.results["final_offer"]
+
+        context = {
+            "role": party.role,
+            "scenario_name": self.scenario.name,
+            "private_context": private_context_str,
+            "final_offer": final_offer,
+            "transcript": transcript,
+            "time_taken": f"{self.turn // 2} days",
+        }
+        template_str = load_template("evaluator_prompt.txt")
+        evaluator_prompt = render_template(template_str, context)
+
+        evaluator_response = party.act(evaluator_prompt)
+        evaluator_response_json = extract_json_block(evaluator_response)
+        if not evaluator_response_json or not isinstance(evaluator_response_json.get("rating"), (int, float)):
+            raise ParseError("Missing or invalid 'rating' key in evaluator JSON.")
+        return evaluator_response_json["rating"]/10.0
+        

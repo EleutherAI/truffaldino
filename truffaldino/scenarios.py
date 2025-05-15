@@ -6,7 +6,7 @@ from typing import Tuple, Any, Dict, Optional
 import random as py_random # Alias to avoid conflict if self.random is used
 from truffaldino.house_price.sample_house_state import (
     sample_negotiation_state,
-    SUBURB_PRICES, UNIT_MULT, BEDROOM_DELTA_MULT,
+    SUBURB_PRICES, UNIT_MULT, BEDROOM_DELTA_MULT, DEFAULT_SIGMA_DELTA,
     BuyerRole, SellerRole # For type hinting
 )
 from truffaldino.house_price.reveal_house_state import generate_full_context
@@ -16,7 +16,8 @@ class BaseScenario(abc.ABC):
     """Abstract base class for negotiation scenarios."""
     name: str = "base_scenario"
     n_turns: int = 2 # Default turns per party
-
+    outcome_sigma: float = 1.0 # Default stdev for outcome scoring
+    
     @abc.abstractmethod
     def get_private_context(self, role: str) -> Dict[str, Any]:
         """Generates the private information dictionary for a given role."""
@@ -99,6 +100,8 @@ class HousePriceScenario(BaseScenario):
             rng_seed=self.seed 
         )
 
+        self.outcome_sigma = self.negotiation_state['buyer']['V_b'] * DEFAULT_SIGMA_DELTA
+
         # 4. Generate narrative contexts using the fully prepared negotiation_state
         # generate_full_context expects 'buyer_role' and 'seller_role' keys in negotiation_state.
         self.narrative_contexts = generate_full_context(self.negotiation_state)
@@ -144,8 +147,6 @@ class HousePriceScenario(BaseScenario):
         else:
             # No agreement or invalid outcome structure
             return seller_batna - seller_breakeven_price, buyer_outside_value - buyer_initial_outside_value
-
-    
 
     def get_batna(self, role: str) -> float:
         """
