@@ -40,10 +40,10 @@ class NegotiationSession:
         self.transcript: List[Dict[str, Any]] = [] # Store structured turn info
         self.turn: int = 0
         self.current_offer: Optional[Dict[str, Any]] = None
-        self.offer_proposed_by: Optional[Literal["A", "B"]] = None
-        self.party_A_accepted: bool = False
-        self.party_B_accepted: bool = False
-        self.last_mediator_message_to: Dict[Literal["A", "B"], str] = {"A": "", "B": ""}
+        self.offer_proposed_by: Optional[Literal["seller", "buyer"]] = None
+        self.seller_accepted: bool = False
+        self.buyer_accepted: bool = False
+        self.last_mediator_message_to: Dict[Literal["seller", "buyer"], str] = {"seller": "", "buyer": ""}
 
         self.results: List[Dict[str, Any]] = []
         
@@ -73,13 +73,13 @@ class NegotiationSession:
             "{% endif %}"
         )
 
-    def _get_party(self, party_id: Literal["A", "B"]) -> PartyAgent:
-        return self.party_A if party_id == "A" else self.party_B
+    def _get_party(self, party_id: Literal["seller", "buyer"]) -> PartyAgent:
+        return self.party_A if party_id == "seller" else self.party_B
 
-    def _prepare_chat_for_recipient(self, recipient: Literal["A", "B", "Mediator"]) -> List[Dict[str, str]]:
+    def _prepare_chat_for_recipient(self, recipient: Literal["seller", "buyer", "agent"]) -> List[Dict[str, str]]:
         chat_messages = []
         for entry in self.transcript:
-            if recipient == "Mediator":
+            if recipient == "agent":
                 if entry['recipient'] is not None:
                     chat_messages.append({"role": "agent", "content": f"{entry['raw_response']}", "next_recipient": entry['next_recipient']})
                 else:
@@ -109,7 +109,7 @@ class NegotiationSession:
         
         return chat_messages if chat_messages else [{"role": "system", "content": "No messages yet."}]
 
-    def _build_party_prompt(self, party_id: Literal["A", "B"]) -> str:
+    def _build_party_prompt(self, party_id: Literal["seller", "buyer"]) -> str:
         party = self._get_party(party_id)
         private_context_dict = self.scenario.get_private_context(party.role)
         private_context_str = self.scenario.format_private_context(private_context_dict)
@@ -131,24 +131,19 @@ class NegotiationSession:
             {"role": "system", "content": system_prompt_content}
         ]
         
-        # Get the conversation history formatted for this party
-        # The roles in _prepare_chat_for_recipient should be like 'user' (for party's own past messages) 
-        # and 'agent' (for mediator's messages to party)
         chat_history = self._prepare_chat_for_recipient(party_id)
         messages.extend(chat_history)
 
         return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-    def _build_mediator_prompt(self, party_id: Literal["A", "B"]) -> str:
+    def _build_mediator_prompt(self, party_id: Literal["seller", "buyer"]) -> str:
         active_party = self._get_party(party_id)
-        inactive_party = self._get_party("B" if party_id == "A" else "A")
+        inactive_party = self._get_party("buyer" if party_id == "seller" else "seller")
 
-        mediator_private_context_dict = self.scenario.get_private_context("mediator")
+        mediator_private_context_dict = self.scenario.get_private_context("agent")
         mediator_private_context_str = self.scenario.format_private_context(mediator_private_context_dict)
 
-        # Load the base prompt for the mediator
         base_prompt_template_str = load_template("mediator_prompt.txt")
-        # Render any specific fields for the base prompt (excluding transcript)
         base_prompt_context = {
             "role": "mediator",
             "private_context": mediator_private_context_str,
@@ -169,13 +164,19 @@ class NegotiationSession:
             {"role": "system", "content": system_prompt_content}
         ]
 
-        # Get the conversation history formatted for the mediator
-        # The roles in _prepare_chat_for_recipient for mediator should be like 'PartyA_turn', 'PartyB_turn', 'Mediator_turn'
-        chat_history = self._prepare_chat_for_recipient("Mediator")
+        chat_history = self._prepare_chat_for_recipient("agent")
         messages.extend(chat_history)
         return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-    def _record_turn(self, actor: BaseAgent, role: str, prompt: str, message: str, action_json: Optional[Dict[str, Any]], recipient: Optional[Literal["A", "B"]], actor_id: Optional[Literal["A", "B"]]):
+    def _record_turn(
+            self,
+            actor: BaseAgent, 
+            role: str, 
+            prompt: str, 
+            message: str, 
+            action_json: Optional[Dict[str, Any]], 
+            recipient: Optional[Literal["seller", "buyer", "agent"]], 
+            actor_id: Optional[Literal["seller", "buyer", "agent"]]):
         response_dict = extract_json_block(message)
         self.transcript.append({
             "turn": self.turn,
@@ -190,27 +191,27 @@ class NegotiationSession:
             "next_recipient": "buyer" if actor.role == "seller" else "agent" if actor.role == "agent" else "seller", # Who the mediator will send the message to next
         })
 
-    def _update_state_from_action(self, action: Dict[str, Any], party_id: Literal["A", "B"]):
+    def _update_state_from_action(self, action: Dict[str, Any], party_id: Literal["seller", "buyer"]):
         action_type = action.get("action")
 
         if action_type == "accept":
-            if party_id == "A":
-                self.party_A_accepted = True
+            if party_id == "seller":
+                self.seller_accepted = True
             else:
-                self.party_B_accepted = True
+                self.buyer_accepted = True
             # Acceptance requires a standing offer from the *other* party
             if not self.current_offer or self.offer_proposed_by == party_id:
                  print(f"Warning: Party {party_id} accepted but no valid offer from other party exists. Treating as reject.")
-                 self.party_A_accepted = False
-                 self.party_B_accepted = False
+                 self.seller_accepted = False
+                 self.buyer_accepted = False
 
         elif action_type == "offer":
             if self.scenario.validate_offer(action):
                 self.current_offer = action # Store the whole offer dict
                 self.offer_proposed_by = party_id
                 # Reset acceptance flags on new offer
-                self.party_A_accepted = False
-                self.party_B_accepted = False
+                self.seller_accepted = False
+                self.buyer_accepted = False
             else:
                 print(f"Warning: Invalid offer structure from {party_id}: {action}")
                 # Treat invalid offer effectively as a reject/no-op
@@ -218,8 +219,8 @@ class NegotiationSession:
 
         elif action_type == "counteroffer":
             # Reset acceptance flags if anyone rejects
-            self.party_A_accepted = False
-            self.party_B_accepted = False
+            self.seller_accepted = False
+            self.buyer_accepted = False
             # Handle counter-offer if present
             counter_offer = action.get("price")
             if counter_offer and isinstance(counter_offer, dict):
@@ -232,8 +233,8 @@ class NegotiationSession:
 
         elif action_type == 'reject':
             # Reset acceptance flags if anyone rejects
-            self.party_A_accepted = False
-            self.party_B_accepted = False
+            self.seller_accepted = False
+            self.buyer_accepted = False
         
         elif action_type == 'inquiry':
             # Do nothing
@@ -248,9 +249,9 @@ class NegotiationSession:
         # Check for agreement first
         agreement_reached = False
         if self.current_offer is not None:
-            if self.offer_proposed_by == "A" and self.party_B_accepted:
+            if self.offer_proposed_by == "seller" and self.buyer_accepted:
                 agreement_reached = True
-            elif self.offer_proposed_by == "B" and self.party_A_accepted:
+            elif self.offer_proposed_by == "buyer" and self.seller_accepted:
                 agreement_reached = True
 
         if agreement_reached:
@@ -277,12 +278,12 @@ class NegotiationSession:
         self.turn = 0
         self.current_offer = None
         self.offer_proposed_by = None
-        self.party_A_accepted = False
-        self.party_B_accepted = False
-        self.last_mediator_message_to = {"A": "", "B": ""}
+        self.seller_accepted = False
+        self.buyer_accepted = False
+        self.last_mediator_message_to = {"seller": "", "buyer": ""}
 
         # Determine starting party
-        active_party_id: Literal["A", "B"] = random.choice(["A", "B"])
+        active_party_id: Literal["seller", "buyer"] = random.choice(["seller", "buyer"])
 
         md_log_file = None
         if md_log_path:
@@ -312,9 +313,9 @@ class NegotiationSession:
 
         while not self._is_finished():
             current_party = self._get_party(active_party_id)
-            inactive_party_id = "B" if active_party_id == "A" else "A"
+            inactive_party_id = "buyer" if active_party_id == "seller" else "seller"
             turn_num_display = self.turn // 2 + 1
-            party_turn_marker = 1 if active_party_id == 'A' else 2
+            party_turn_marker = 1 if active_party_id == 'seller' else 2
             if debug:
                 print(f"\n--- Turn {turn_num_display}.{party_turn_marker}: {current_party.name}'s move (to Mediator) ---")
             if md_log_file:
@@ -394,9 +395,9 @@ class NegotiationSession:
         # Determine acceptance based on the logic in _is_finished
         accepted = False
         if self.current_offer is not None:
-            if self.offer_proposed_by == "A" and self.party_B_accepted:
+            if self.offer_proposed_by == "seller" and self.buyer_accepted:
                 accepted = True
-            elif self.offer_proposed_by == "B" and self.party_A_accepted:
+            elif self.offer_proposed_by == "buyer" and self.seller_accepted:
                 accepted = True
 
         if md_log_file:
@@ -493,7 +494,7 @@ class NegotiationSession:
         """
         if not self.results:
             raise ValueError("Results not found. Run the negotiation first.")
-        party_id = "A" if party == self.party_A else "B"
+        party_id = "seller" if party == self.party_A else "buyer"
         private_context = self.scenario.get_private_context(party.role)
         private_context_str = self.scenario.format_private_context(private_context)
         chat_history = self._prepare_chat_for_recipient(party_id)
@@ -517,7 +518,7 @@ class NegotiationSession:
         
         # Get the conversation history formatted for this party for evaluation context
         # This should use the party-specific view (roles 'user' and 'agent')
-        chat_history = self._prepare_chat_for_recipient(party_id) # party_id is 'A' or 'B'
+        chat_history = self._prepare_chat_for_recipient(party_id) # party_id is 'seller' or 'buyer'
         messages.extend(chat_history)
 
         evaluator_prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) # No generation prompt for eval

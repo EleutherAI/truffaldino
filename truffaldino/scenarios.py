@@ -112,10 +112,10 @@ class HousePriceScenario(BaseScenario):
             return {"narrative": self.narrative_contexts["seller_context"]}
         elif role == "buyer":
             return {"narrative": self.narrative_contexts["buyer_context"]}
-        elif role == "mediator": # Role used by NegotiationSession to get mediator's context
+        elif role == "agent": # Role used by NegotiationSession to get agent's context
             return {"narrative": self.narrative_contexts["agent_context"]}
         else:
-            raise ValueError(f"Unknown role for private context: {role}. Expected 'seller', 'buyer', or 'mediator'.")
+            raise ValueError(f"Unknown role for private context: {role}. Expected 'seller', 'buyer', or 'agent'.")
 
     def format_private_context(self, context: Dict[str, Any]) -> str:
         """Returns the narrative string from the context dictionary."""

@@ -32,17 +32,17 @@ def main(scenario: str, seed: Optional[int] = None, md_log_path: Optional[str] =
     llm_params = {"temperature": 0.7, "max_tokens": 1000}
 
     seller_agent = PartyAgent(
-        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Party Seller", **{**llm_params, **kwargs}),
+        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Seller", **{**llm_params, **kwargs}),
         name="SellerBot (Gemini-Flash)",
         role="seller"
     )
     buyer_agent = PartyAgent(
-        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Party Buyer", **{**llm_params, **kwargs}),
+        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Buyer", **{**llm_params, **kwargs}),
         name="BuyerBot (Gemini-Flash)",
         role="buyer"
     )
     mediator_agent = MediatorAgent(
-        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Mediator", **{**llm_params, **kwargs}),
+        call_fn=lambda prompt, **kwargs: openrouter_llm_call(prompt, agent_name="Agent", **{**llm_params, **kwargs}),
         name="MediatorBot (Gemini-Flash)"
     )
 
