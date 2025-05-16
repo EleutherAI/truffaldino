@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional, List, Literal
 
+from transformers import AutoTokenizer
+
 from .agents import PartyAgent, MediatorAgent, BaseAgent
 from .scenarios import BaseScenario
 from .parse import extract_json_block, ParseError
@@ -29,7 +31,7 @@ def render_template(template_str: str, context: Dict[str, Any]) -> str:
 class NegotiationSession:
     """Manages the state and execution of a single negotiation round."""
 
-    def __init__(self, scenario: BaseScenario, party_A: PartyAgent, party_B: PartyAgent, mediator: MediatorAgent):
+    def __init__(self, scenario: BaseScenario, party_A: PartyAgent, party_B: PartyAgent, mediator: MediatorAgent, tokenizer_name_or_path: str = "gpt2"):
         self.scenario = scenario
         self.party_A = party_A
         self.party_B = party_B
@@ -43,80 +45,135 @@ class NegotiationSession:
         self.party_B_accepted: bool = False
         self.last_mediator_message_to: Dict[Literal["A", "B"], str] = {"A": "", "B": ""}
 
+        self.results: List[Dict[str, Any]] = []
+        
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token # Common practice for models like GPT-2
+
+        # Define the Jinja chat template
+        self.tokenizer.chat_template = (
+            "{% for message in messages %}"
+                "{% if message.role == 'system' %}"
+                    "{{ message.content \n}}"
+                "{% elif message.role == 'seller' %}"
+                    "\n\n**Party A (to Agent):**\n{{ message.content }}"
+                "{% elif message.role == 'buyer' %}"
+                    "\n\n**Party B (to Agent):**\n{{ message.content }}"
+                 "{% elif message.role == 'agent' %}"
+                    "\n\n**Agent (to {{ message.recipient }}):**\n{{ message.content }}"
+                "{% else %}"
+                    "\n\n**{{ message.role }}:**\n{{ message.content }}"
+                "{% endif %}"
+            "{% endfor %}"
+            "{% if add_generation_prompt %}"
+                 "{% if messages[-1].role == 'buyer' or messages[-1].role == 'seller' %}"
+                    "\n\n**Agent (to {{ messages[-1].next_recipient }}):**\n"                   
+                 "{% endif %}"
+            "{% endif %}"
+        )
+
     def _get_party(self, party_id: Literal["A", "B"]) -> PartyAgent:
         return self.party_A if party_id == "A" else self.party_B
 
-    def _format_transcript_for_prompt(self, recipient: Literal["A", "B", "Mediator"]) -> str:
-        lines = []
+    def _prepare_chat_for_recipient(self, recipient: Literal["A", "B", "Mediator"]) -> List[Dict[str, str]]:
+        chat_messages = []
         for entry in self.transcript:
             if recipient == "Mediator":
-                lines.append(f"Turn {entry['turn']} - {entry['actor']} ({entry['role']}):")
-                # Only show mediator's thoughts to the mediator
                 if entry['recipient'] is not None:
-                    lines.append(f"  Thoughts: {entry['response'].get('thoughts', '')}")
-                lines.append(f"  Message: {entry['response'].get('message', '')}")
-                lines.append(f" Action: {entry['response'].get('action', '')}")
-                if entry['response'].get('price'):
-                    lines.append(f"  Price: {entry['response'].get('price', '')}")
+                    chat_messages.append({"role": "agent", "content": f"{entry['raw_response']}", "next_recipient": entry['next_recipient']})
+                else:
+                    content = []
+                    content.append(f"  Turn: {entry['turn']}")
+                    content.append(f"  Message: {entry['response'].get('message', '')}")
+                    content.append(f"  Action: {entry['response'].get('action', '')}")
+                    content.append(f"  Price: {entry['response'].get('price', '')}")
+                    chat_messages.append({"role": f"{entry['role']}", "content": "\n".join(content)})
             elif recipient == entry['recipient']:
-                 lines.append(f"Turn {entry['turn']} - From Agent:")
-                 lines.append(f"  {entry['response'].get('message', '')}")
-                 if entry['response'].get('price'):
-                    lines.append(f"  Price: {entry['response'].get('price', '')}")
-                 if entry['response'].get('action'):
-                    lines.append(f"  Action Conveyed: {json.dumps(entry['response']['action'])}")
+                content = []
+                content.append(f"  Turn: {entry['turn']}")
+                content.append(f"  Message: {entry['response'].get('message', '')}")
+                content.append(f"  Action: {entry['response'].get('action', '')}")
+                content.append(f"  Price: {entry['response'].get('price', '')}")
+                chat_messages.append({"role": f"{entry['role']}", "content": "\n".join(content)})
             elif entry['actor_id'] == recipient and entry['recipient'] is None:
-                lines.append(f"Turn {entry['turn']} - To Agent:")
-                lines.append(f"  Thoughts: {entry['response'].get('thoughts', '')}")
-                lines.append(f"  Message: {entry['response'].get('message', '')}")
-                if entry['response'].get('action'):
-                    lines.append(f"  Action: {json.dumps(entry['response']['action'])}")
-                if entry['response'].get('price'):
-                    lines.append(f"  Price: {entry['response'].get('price', '')}")
-
-        transcript_str = "\n".join(lines) if lines else "No messages yet."
-        return transcript_str
+                content = []
+                content.append(f"  Turn: {entry['turn']}")
+                content.append(f"  Thoughts: {entry['response'].get('thoughts', '')}")
+                content.append(f"  Message: {entry['response'].get('message', '')}")
+                content.append(f"  Action: {entry['response'].get('action', '')}")
+                content.append(f"  Price: {entry['response'].get('price', '')}")
+                chat_messages.append({"role": f"{entry['role']}", "content": "\n".join(content)})
+            else:
+                pass
+        
+        return chat_messages if chat_messages else [{"role": "system", "content": "No messages yet."}]
 
     def _build_party_prompt(self, party_id: Literal["A", "B"]) -> str:
         party = self._get_party(party_id)
         private_context_dict = self.scenario.get_private_context(party.role)
         private_context_str = self.scenario.format_private_context(private_context_dict)
 
-        context = {
+        # Load the base prompt for the party
+        base_prompt_template_str = load_template("party_prompt.txt")
+        # Render any specific fields for the base prompt (excluding transcript)
+        base_prompt_context = {
             "role": party.role,
             "scenario_name": self.scenario.name,
             "private_context": private_context_str,
             "current_offer_price": self.current_offer.get('price') if self.current_offer else None,
             "current_offer_by": self.offer_proposed_by,
-            "transcript": self._format_transcript_for_prompt(party_id),
         }
-        template_str = load_template("party_prompt.txt")
-        return render_template(template_str, context)
+        system_prompt_content = render_template(base_prompt_template_str, base_prompt_context)
+
+        # Prepare messages for chat template
+        messages = [
+            {"role": "system", "content": system_prompt_content}
+        ]
+        
+        # Get the conversation history formatted for this party
+        # The roles in _prepare_chat_for_recipient should be like 'user' (for party's own past messages) 
+        # and 'agent' (for mediator's messages to party)
+        chat_history = self._prepare_chat_for_recipient(party_id)
+        messages.extend(chat_history)
+
+        return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
     def _build_mediator_prompt(self, party_id: Literal["A", "B"]) -> str:
         active_party = self._get_party(party_id)
         inactive_party = self._get_party("B" if party_id == "A" else "A")
 
-        # Get mediator's private context from the scenario
         mediator_private_context_dict = self.scenario.get_private_context("mediator")
         mediator_private_context_str = self.scenario.format_private_context(mediator_private_context_dict)
 
-        context = {
-            "role": "mediator", # Added role for mediator template consistency
-            "private_context": mediator_private_context_str, # Mediator's own private info
+        # Load the base prompt for the mediator
+        base_prompt_template_str = load_template("mediator_prompt.txt")
+        # Render any specific fields for the base prompt (excluding transcript)
+        base_prompt_context = {
+            "role": "mediator",
+            "private_context": mediator_private_context_str,
             "scenario_name": self.scenario.name,
             "party_A_name": self.party_A.name,
             "party_A_role": self.party_A.role,
             "party_B_name": self.party_B.name,
             "party_B_role": self.party_B.role,
-            "transcript": self._format_transcript_for_prompt("Mediator"),
             "active_party_name": active_party.name,
             "active_party_role": active_party.role,
             "inactive_party_name": inactive_party.name,
             "inactive_party_role": inactive_party.role,
         }
-        template_str = load_template("mediator_prompt.txt")
-        return render_template(template_str, context)
+        system_prompt_content = render_template(base_prompt_template_str, base_prompt_context)
+
+        # Prepare messages for chat template
+        messages = [
+            {"role": "system", "content": system_prompt_content}
+        ]
+
+        # Get the conversation history formatted for the mediator
+        # The roles in _prepare_chat_for_recipient for mediator should be like 'PartyA_turn', 'PartyB_turn', 'Mediator_turn'
+        chat_history = self._prepare_chat_for_recipient("Mediator")
+        messages.extend(chat_history)
+        return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
     def _record_turn(self, actor: BaseAgent, role: str, prompt: str, message: str, action_json: Optional[Dict[str, Any]], recipient: Optional[Literal["A", "B"]], actor_id: Optional[Literal["A", "B"]]):
         response_dict = extract_json_block(message)
@@ -127,8 +184,10 @@ class NegotiationSession:
             "role": role,
             "prompt": prompt,
             "response": response_dict,
+            "raw_response": message,
             "action_json": action_json,
             "recipient": recipient, # Who the mediator sent the message to
+            "next_recipient": "buyer" if actor.role == "seller" else "agent" if actor.role == "agent" else "seller", # Who the mediator will send the message to next
         })
 
     def _update_state_from_action(self, action: Dict[str, Any], party_id: Literal["A", "B"]):
@@ -201,11 +260,18 @@ class NegotiationSession:
         # Turn count increments *after* mediator speaks, so check >= max_turns * 2
         return self.turn >= self.scenario.n_turns * 2
 
-    def run(self, seed: Optional[int] = None, md_log_path: Optional[str] = None, json_log_path: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
+    def run(self, n_runs: int = 1, seed: Optional[int] = None, md_log_path: Optional[str] = None, json_log_path: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
         """Runs the negotiation process until completion, optionally logging to files."""
-        if seed is not None:
-            random.seed(seed)
 
+        self.results = []
+        for run_idx in range(n_runs):
+            if seed is not None:
+                random.seed(seed)
+            seed = random.randint(0, 2**32 - 1)
+            self.results.append(self.run_single(seed, f"{md_log_path}_{run_idx}.md", f"{json_log_path}_{run_idx}.json", debug))
+        return self.results
+
+    def run_single(self, seed: int, md_log_path: Optional[str] = None, json_log_path: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
         # Reset state for potentially multiple runs
         self.transcript = []
         self.turn = 0
@@ -270,9 +336,8 @@ class NegotiationSession:
             # Log party message before recording internally
             if md_log_file:
                 md_log_file.write(f"**{current_party.name} ({current_party.role}) says:**\n")
-                md_log_file.write(f"```text\n{party_prompt}\n```\n")
-                md_log_file.write(f"```text\n{party_raw_response}\n```\n")
-                md_log_file.write(f"**Action Parsed:** `{json.dumps(party_action_json)}`\n\n")
+                md_log_file.write(f"{party_prompt}")
+                md_log_file.write(f"{party_raw_response}")
 
             self._record_turn(current_party, current_party.role, party_prompt, party_raw_response, party_action_json, recipient=None, actor_id=active_party_id) # Party -> Mediator
             if debug:
@@ -376,6 +441,8 @@ class NegotiationSession:
 
         self.results["eval_party_A"] = eval_party_A
         self.results["eval_party_B"] = eval_party_B
+        self.results['normalized_payoff_A'] = self.score_by_payoff(self.party_A)
+        self.results['normalized_payoff_B'] = self.score_by_payoff(self.party_B)
 
         # Close markdown log file if open
         if md_log_file:
@@ -405,6 +472,8 @@ class NegotiationSession:
         """
         Scores the payoff for a given role.
         """
+        if not self.results:
+            raise ValueError("Results not found. Run the negotiation first.")
         outcome = self.results["final_offer"]
         seller_payoff, buyer_payoff = self.scenario.get_payoffs(outcome, self.turn // 2)
 
@@ -422,23 +491,36 @@ class NegotiationSession:
         """
         Scores the payoff for a given role.
         """
+        if not self.results:
+            raise ValueError("Results not found. Run the negotiation first.")
         party_id = "A" if party == self.party_A else "B"
         private_context = self.scenario.get_private_context(party.role)
         private_context_str = self.scenario.format_private_context(private_context)
-        transcript = self._format_transcript_for_prompt(party_id)
+        chat_history = self._prepare_chat_for_recipient(party_id)
 
         final_offer = "Negotiation concluded with no agreement reached" if not self.results["accepted"] else self.results["final_offer"]
 
-        context = {
+        base_eval_context = {
             "role": party.role,
             "scenario_name": self.scenario.name,
             "private_context": private_context_str,
             "final_offer": final_offer,
-            "transcript": transcript,
             "time_taken": f"{self.turn // 2} days",
         }
-        template_str = load_template("evaluator_prompt.txt")
-        evaluator_prompt = render_template(template_str, context)
+        base_eval_prompt_str = load_template("evaluator_prompt.txt")
+        system_prompt_content = render_template(base_eval_prompt_str, base_eval_context)
+
+        # Prepare messages for chat template
+        messages = [
+            {"role": "system", "content": system_prompt_content}
+        ]
+        
+        # Get the conversation history formatted for this party for evaluation context
+        # This should use the party-specific view (roles 'user' and 'agent')
+        chat_history = self._prepare_chat_for_recipient(party_id) # party_id is 'A' or 'B'
+        messages.extend(chat_history)
+
+        evaluator_prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) # No generation prompt for eval
 
         evaluator_response = party.act(evaluator_prompt)
         evaluator_response_json = extract_json_block(evaluator_response)

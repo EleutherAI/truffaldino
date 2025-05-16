@@ -54,7 +54,7 @@ def main(scenario: str, seed: Optional[int] = None, md_log_path: Optional[str] =
         mediator=mediator_agent
     )
 
-    results = session.run(seed=seed, md_log_path=md_log_path, json_log_path=json_log_path)
+    results = session.run_single(seed=seed, md_log_path=md_log_path, json_log_path=json_log_path)
 
     return results, session
 

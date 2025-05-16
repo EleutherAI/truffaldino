@@ -4,9 +4,6 @@ Current negotiation state:
 - Last proposed offer: {{current_offer_price | default('None')}}
 - Proposed by: {{current_offer_by | default('N/A')}}
 
-Messages from the AI Property Agent:
-{{transcript}}
-
 Your task is to instruct the AI Property Agent on your next move. You can:
 1.  Make an OFFER: Propose a specific price (or relevant value for the scenario). You can optionally include a message to explain your offer or ask for information.
 2.  ACCEPT the current offer if one exists and it's agreeable. You can optionally add a message. The AI property agent has access to private information about the property and the property market, and it may be worth asking it questions. Messages go to the agent, if you want a message passed on to the other party you need to ask for it explicitly.
@@ -65,4 +62,4 @@ To reject and make a counter-offer with a message:
 }
 ```
 
-Based on your private information, the history, and the current offer (if any), decide your next move and respond with the appropriate JSON block. 
+Based on your private information, the history, and the current offer (if any), decide your next move and respond with the appropriate JSON block.

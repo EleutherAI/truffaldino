@@ -32,6 +32,7 @@ class MediatorAgent(BaseAgent):
     """Represents the mediator agent."""
     def __init__(self, call_fn: LLMCallable, name: str = "Mediator"):
         super().__init__(call_fn, name)
+        self.role = "agent"
 
     def act(self, context: str) -> str:
         # Mediator might have different prompt structuring logic
