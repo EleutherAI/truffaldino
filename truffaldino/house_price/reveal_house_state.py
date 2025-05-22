@@ -129,11 +129,11 @@ def generate_narrative_contexts(
     for attempt in range(MAX_RETRIES):
         print(f"Attempt {attempt + 1} of {MAX_RETRIES} to generate narrative contexts...")
         raw_response = openrouter_llm_call(
-            prompt=formatted_prompt,
+            messages=[{"role": "system", "content": formatted_prompt}],
             agent_name="NarrativeGenerator",
             temperature=llm_temp,
             max_tokens=llm_max_tokens,
-        )
+        ).content
 
         try:
             if raw_response.startswith("```json"):

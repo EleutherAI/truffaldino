@@ -1,7 +1,8 @@
 import random
 import json
 from pathlib import Path
-from typing import Dict, Any, Tuple, Optional, List, Literal
+from typing import Dict, Any, Tuple, Optional, List, Literal, Union
+from io import TextIOWrapper
 
 from transformers import AutoTokenizer
 
@@ -31,44 +32,48 @@ def render_template(template_str: str, context: Dict[str, Any]) -> str:
 class NegotiationSession:
     """Manages the state and execution of a single negotiation round."""
 
-    def __init__(self, scenario: BaseScenario, party_A: PartyAgent, party_B: PartyAgent, mediator: MediatorAgent, tokenizer_name_or_path: str = "gpt2"):
+    def __init__(self, scenario: BaseScenario, party_A: PartyAgent, party_B: PartyAgent, tokenizer_name_or_path: str = "gpt2"):
         self.scenario = scenario
         self.party_A = party_A
         self.party_B = party_B
-        self.mediator = mediator
 
-        self.transcript: List[Dict[str, Any]] = [] # Store structured turn info
+        self.transcript: List[Dict[str, Any]] = []
         self.turn: int = 0
+        self._mediator_role = "assistant"
+        self.last_turn: Dict[str, int] = {"seller": -1, "buyer": -1, self._mediator_role: -1}
+        
         self.current_offer: Optional[Dict[str, Any]] = None
         self.offer_proposed_by: Optional[Literal["seller", "buyer"]] = None
         self.seller_accepted: bool = False
         self.buyer_accepted: bool = False
-        self.last_mediator_message_to: Dict[Literal["seller", "buyer"], str] = {"seller": "", "buyer": ""}
-
-        self.results: List[Dict[str, Any]] = []
+        
+        self.current_party_id_to_act: Optional[Literal["seller", "buyer"]] = None
+        self.last_party_action_json: Optional[Dict[str, Any]] = None
+        self.last_mediator_message_to_party: Dict[Literal["seller", "buyer"], str] = {"seller": "", "buyer": ""}
+        
+        self.results: Optional[Dict[str, Any]] = None
         
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
         if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token # Common practice for models like GPT-2
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Define the Jinja chat template
         self.tokenizer.chat_template = (
             "{% for message in messages %}"
                 "{% if message.role == 'system' %}"
                     "{{ message.content \n}}"
                 "{% elif message.role == 'seller' %}"
-                    "\n\n**Party A (to Agent):**\n{{ message.content }}"
+                    "\n\n**Party A (Seller) to Agent:**\n{{ message.content }}"
                 "{% elif message.role == 'buyer' %}"
-                    "\n\n**Party B (to Agent):**\n{{ message.content }}"
-                 "{% elif message.role == 'agent' %}"
-                    "\n\n**Agent (to {{ message.recipient }}):**\n{{ message.content }}"
+                    "\n\n**Party B (Buyer) to Agent:**\n{{ message.content }}"
+                "{% elif message.role == 'agent' %}"
+                    "\n\n**Agent:**\n{{ message.content }}"
                 "{% else %}"
                     "\n\n**{{ message.role }}:**\n{{ message.content }}"
                 "{% endif %}"
             "{% endfor %}"
             "{% if add_generation_prompt %}"
-                 "{% if messages[-1].role == 'buyer' or messages[-1].role == 'seller' %}"
-                    "\n\n**Agent (to {{ messages[-1].next_recipient }}):**\n"                   
+                "{% if messages[-1].role == 'buyer' or messages[-1].role == 'seller' %}"
+                    "\n\n**Agent:**\n"
                  "{% endif %}"
             "{% endif %}"
         )
@@ -76,47 +81,91 @@ class NegotiationSession:
     def _get_party(self, party_id: Literal["seller", "buyer"]) -> PartyAgent:
         return self.party_A if party_id == "seller" else self.party_B
 
-    def _prepare_chat_for_recipient(self, recipient: Literal["seller", "buyer", "agent"]) -> List[Dict[str, str]]:
+    def _prepare_chat_for_party_view(self, party_id: Literal["seller", "buyer"]) -> List[Dict[str, str]]:
         chat_messages = []
         for entry in self.transcript:
-            if recipient == "agent":
-                if entry['recipient'] is not None:
-                    chat_messages.append({"role": "agent", "content": f"{entry['raw_response']}", "next_recipient": entry['next_recipient']})
-                else:
-                    content = []
-                    content.append(f"  Turn: {entry['turn']}")
-                    content.append(f"  Message: {entry['response'].get('message', '')}")
-                    content.append(f"  Action: {entry['response'].get('action', '')}")
-                    content.append(f"  Price: {entry['response'].get('price', '')}")
-                    chat_messages.append({"role": f"{entry['role']}", "content": "\n".join(content)})
-            elif recipient == entry['recipient']:
-                content = []
-                content.append(f"  Turn: {entry['turn']}")
-                content.append(f"  Message: {entry['response'].get('message', '')}")
-                content.append(f"  Action: {entry['response'].get('action', '')}")
-                content.append(f"  Price: {entry['response'].get('price', '')}")
-                chat_messages.append({"role": f"{entry['role']}", "content": "\n".join(content)})
-            elif entry['actor_id'] == recipient and entry['recipient'] is None:
-                content = []
-                content.append(f"  Turn: {entry['turn']}")
-                content.append(f"  Thoughts: {entry['response'].get('thoughts', '')}")
-                content.append(f"  Message: {entry['response'].get('message', '')}")
-                content.append(f"  Action: {entry['response'].get('action', '')}")
-                content.append(f"  Price: {entry['response'].get('price', '')}")
-                chat_messages.append({"role": f"{entry['role']}", "content": "\n".join(content)})
-            else:
-                pass
+
+            # Party's messages to mediator - parties see their own thoughts
+            if entry['actor_id'] == party_id and entry['recipient'] is None:
+                formatted_content = []
+                if 'thoughts' in entry['response'] and entry['response']['thoughts']:
+                    formatted_content.append(f"  My Thoughts: {entry['response'].get('thoughts', '')}")
+                formatted_content.append(f"  My Message to Agent: {entry['response'].get('message', '')}")
+                formatted_content.append(f"  My Proposed Action: {entry['response'].get('action', '')}")
+                if 'price' in entry['response'] and entry['response'].get('price') is not None:
+                    formatted_content.append(f"  My Proposed Price: {entry['response'].get('price', '')}")
+                if 'turn' in entry:
+                    formatted_content.append(f"  Turn: {entry['turn']}")
+                chat_messages.append({"role": entry['role'], "content": "\n".join(formatted_content)})
+            # Mediator's messages to this party - parties don't see thoughts
+            elif entry['role'] == self._mediator_role and entry['recipient'] == party_id:
+                formatted_content = []
+                formatted_content.append(f"  Message from Mediator: {entry['response'].get('message', entry['raw_response'])}")
+                formatted_content.append(f"  Proposed Action: {entry['response'].get('action', '')}")
+                if 'price' in entry['response'] and entry['response'].get('price') is not None:
+                    formatted_content.append(f"  Proposed Price: {entry['response'].get('price', '')}")
+                if 'turn' in entry:
+                    formatted_content.append(f"  Turn: {entry['turn']}")    
+                chat_messages.append({"role": entry['role'], "content": "\n".join(formatted_content)})
         
-        return chat_messages if chat_messages else [{"role": "system", "content": "No messages yet."}]
+        return [{
+            "role": "system",
+            "content": self.tokenizer.apply_chat_template(
+                chat_messages,
+                tokenize=False
+            )
+        }] if chat_messages else [{"role": "system", "content": "No messages yet."}]
+
+    def _prepare_msg_for_mediator_view(self) -> List[Dict[str, str]]:
+        chat_messages = []
+        start_turn_val = self.last_turn[self._mediator_role] + 1
+        processed_turns_in_this_call = set()
+
+        if start_turn_val == 0:
+            chat_messages.append({"role": "system", "content": self._build_mediator_system_prompt()})
+
+        for entry in self.transcript:
+            if entry['turn'] < start_turn_val:
+                continue
+            processed_turns_in_this_call.add(entry['turn'])
+
+            # Messages from parties to the mediator - mediator does not see party's thoughts
+            if entry['actor_id'] in ["seller", "buyer"] and entry['recipient'] is None:
+                formatted_content = []
+                formatted_content.append(f"  Message from {entry['role'].capitalize()} ({entry['actor_id']}): {entry['response'].get('message', '')}")
+                formatted_content.append(f"  Proposed Action: {entry['response'].get('action', '')}")
+                if 'price' in entry['response'] and entry['response'].get('price') is not None:
+                    formatted_content.append(f"  Proposed Price: {entry['response'].get('price', '')}")
+                if 'turn' in entry:
+                    formatted_content.append(f"  Turn: {entry['turn']}")
+                chat_messages.append({"role": entry['role'], "content": "\n".join(formatted_content)})
+            # Mediator's  messages (to parties) - mediator sees own raw responses
+            elif entry['role'] == self._mediator_role and entry['recipient'] is not None:
+
+                chat_messages.append({
+                    "role": self._mediator_role,
+                    "content": entry['raw_response'],
+                    "recipient": entry['recipient'],
+                })
+        
+        if processed_turns_in_this_call:
+            self.last_turn[self._mediator_role] = max(processed_turns_in_this_call)
+
+        chat_messages = chat_messages if chat_messages else [{"role": "system", "content": "No messages yet."}]
+
+        return_msg = self.tokenizer.apply_chat_template(
+            chat_messages,
+            tokenize=False
+        )
+
+        return return_msg
 
     def _build_party_prompt(self, party_id: Literal["seller", "buyer"]) -> str:
         party = self._get_party(party_id)
         private_context_dict = self.scenario.get_private_context(party.role)
         private_context_str = self.scenario.format_private_context(private_context_dict)
 
-        # Load the base prompt for the party
         base_prompt_template_str = load_template("party_prompt.txt")
-        # Render any specific fields for the base prompt (excluding transcript)
         base_prompt_context = {
             "role": party.role,
             "scenario_name": self.scenario.name,
@@ -126,406 +175,322 @@ class NegotiationSession:
         }
         system_prompt_content = render_template(base_prompt_template_str, base_prompt_context)
 
-        # Prepare messages for chat template
         messages = [
             {"role": "system", "content": system_prompt_content}
         ]
         
-        chat_history = self._prepare_chat_for_recipient(party_id)
+        chat_history = self._prepare_chat_for_party_view(party_id)
         messages.extend(chat_history)
+        
+        return messages
 
-        return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    def _build_mediator_system_prompt(self) -> str:
+        mediator_prompt_template_str = load_template("mediator_prompt.txt")
+        private_context_dict = self.scenario.get_private_context("agent")
+        private_context_str = self.scenario.format_private_context(private_context_dict)
 
-    def _build_mediator_prompt(self, party_id: Literal["seller", "buyer"]) -> str:
-        active_party = self._get_party(party_id)
-        inactive_party = self._get_party("buyer" if party_id == "seller" else "seller")
-
-        mediator_private_context_dict = self.scenario.get_private_context("agent")
-        mediator_private_context_str = self.scenario.format_private_context(mediator_private_context_dict)
-
-        base_prompt_template_str = load_template("mediator_prompt.txt")
-        base_prompt_context = {
-            "role": "mediator",
-            "private_context": mediator_private_context_str,
+        mediator_prompt_context = {
+            "role": self._mediator_role,
             "scenario_name": self.scenario.name,
             "party_A_name": self.party_A.name,
-            "party_A_role": self.party_A.role,
             "party_B_name": self.party_B.name,
-            "party_B_role": self.party_B.role,
-            "active_party_name": active_party.name,
-            "active_party_role": active_party.role,
-            "inactive_party_name": inactive_party.name,
-            "inactive_party_role": inactive_party.role,
+            "private_context": private_context_str
         }
-        system_prompt_content = render_template(base_prompt_template_str, base_prompt_context)
-
-        # Prepare messages for chat template
-        messages = [
-            {"role": "system", "content": system_prompt_content}
-        ]
-
-        chat_history = self._prepare_chat_for_recipient("agent")
-        messages.extend(chat_history)
-        return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        system_prompt_content = render_template(mediator_prompt_template_str, mediator_prompt_context)
+        return system_prompt_content
 
     def _record_turn(
             self,
-            actor: BaseAgent, 
-            role: str, 
-            prompt: str, 
-            message: str, 
-            action_json: Optional[Dict[str, Any]], 
-            recipient: Optional[Literal["seller", "buyer", "agent"]], 
-            actor_id: Optional[Literal["seller", "buyer", "agent"]]):
-        response_dict = extract_json_block(message)
+            actor_role: str,
+            prompt_or_payload: Union[str, Dict[str, Any]],
+            raw_response: str,
+            parsed_response_json: Optional[Dict[str, Any]],
+            recipient_party_id: Optional[Literal["seller", "buyer"]] = None,
+            actor_identifier: Optional[str] = None
+            ):
+        
+        actor_name = actor_identifier
+        if actor_role == "seller":
+            actor_name = self.party_A.name
+            actor_identifier = "seller"
+        elif actor_role == "buyer":
+            actor_name = self.party_B.name
+            actor_identifier = "buyer"
+
         self.transcript.append({
             "turn": self.turn,
-            "actor": actor.name,
-            "actor_id": actor_id,
-            "role": role,
-            "prompt": prompt,
-            "response": response_dict,
-            "raw_response": message,
-            "action_json": action_json,
-            "recipient": recipient, # Who the mediator sent the message to
-            "next_recipient": "buyer" if actor.role == "seller" else "agent" if actor.role == "agent" else "seller", # Who the mediator will send the message to next
+            "actor_name": actor_name,
+            "actor_id": actor_identifier,
+            "role": actor_role,
+            "prompt_or_payload": prompt_or_payload,
+            "response": parsed_response_json or {},
+            "raw_response": raw_response,
+            "recipient": recipient_party_id, 
         })
 
-    def _update_state_from_action(self, action: Dict[str, Any], party_id: Literal["seller", "buyer"]):
+    def _update_state_from_action(self, action: Dict[str, Any], proposing_party_id: Literal["seller", "buyer"]):
         action_type = action.get("action")
 
         if action_type == "accept":
-            if party_id == "seller":
+            if proposing_party_id == "seller":
                 self.seller_accepted = True
             else:
                 self.buyer_accepted = True
-            # Acceptance requires a standing offer from the *other* party
-            if not self.current_offer or self.offer_proposed_by == party_id:
-                 print(f"Warning: Party {party_id} accepted but no valid offer from other party exists. Treating as reject.")
+            if not self.current_offer or self.offer_proposed_by == proposing_party_id:
+                 print(f"Warning: Party {proposing_party_id} accepted but no valid offer from other party exists. Treating as reject.")
                  self.seller_accepted = False
                  self.buyer_accepted = False
 
         elif action_type == "offer":
             if self.scenario.validate_offer(action):
-                self.current_offer = action # Store the whole offer dict
-                self.offer_proposed_by = party_id
-                # Reset acceptance flags on new offer
+                self.current_offer = action 
+                self.offer_proposed_by = proposing_party_id
                 self.seller_accepted = False
                 self.buyer_accepted = False
             else:
-                print(f"Warning: Invalid offer structure from {party_id}: {action}")
-                # Treat invalid offer effectively as a reject/no-op
-                pass
-
+                print(f"Warning: Invalid offer structure from {proposing_party_id}: {action}")
+        
         elif action_type == "counteroffer":
-            # Reset acceptance flags if anyone rejects
             self.seller_accepted = False
             self.buyer_accepted = False
-            # Handle counter-offer if present
-            counter_offer = action.get("price")
-            if counter_offer and isinstance(counter_offer, dict):
-                 if self.scenario.validate_offer(counter_offer):
-                     self.current_offer = counter_offer
-                     self.offer_proposed_by = party_id
-                 else:
-                     print(f"Warning: Invalid counter-offer structure from {party_id}: {counter_offer}")
-            # If simple reject, the current offer remains (if any) but is no longer accepted
+            if self.scenario.validate_offer(action):
+                self.current_offer = action
+                self.offer_proposed_by = proposing_party_id
+            else:
+                print(f"Warning: Invalid counter-offer structure from {proposing_party_id}: {action}")
 
         elif action_type == 'reject':
-            # Reset acceptance flags if anyone rejects
             self.seller_accepted = False
             self.buyer_accepted = False
         
-        elif action_type == 'inquiry':
-            # Do nothing
+        elif action_type == 'inquiry' or action_type == 'pass' or action_type == 'response':
             pass
-
         else:
-            print(f"Warning: Unknown action type '{action_type}' from {party_id}")
-            # Treat unknown action as reject/no-op
-            pass
+            print(f"Warning: Unknown action type '{action_type}' from {proposing_party_id} in _update_state_from_action. Action: {action}")
 
     def _is_finished(self) -> bool:
-        # Check for agreement first
         agreement_reached = False
         if self.current_offer is not None:
             if self.offer_proposed_by == "seller" and self.buyer_accepted:
                 agreement_reached = True
             elif self.offer_proposed_by == "buyer" and self.seller_accepted:
                 agreement_reached = True
-
         if agreement_reached:
             return True
-
-        # Check if max turns reached
-        # Turn count increments *after* mediator speaks, so check >= max_turns * 2
         return self.turn >= self.scenario.n_turns * 2
 
-    def run(self, n_runs: int = 1, seed: Optional[int] = None, md_log_path: Optional[str] = None, json_log_path: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
-        """Runs the negotiation process until completion, optionally logging to files."""
-
-        self.results = []
-        for run_idx in range(n_runs):
-            if seed is not None:
-                random.seed(seed)
-            seed = random.randint(0, 2**32 - 1)
-            self.results.append(self.run_single(seed, f"{md_log_path}_{run_idx}.md", f"{json_log_path}_{run_idx}.json", debug))
-        return self.results
-
-    def run_single(self, seed: int, md_log_path: Optional[str] = None, json_log_path: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
-        # Reset state for potentially multiple runs
+    def initialize_first_turn(self) -> Tuple[Literal["seller", "buyer"], Dict[str, Any], str]:
         self.transcript = []
-        self.turn = 0
+        self.turn = 0 
         self.current_offer = None
         self.offer_proposed_by = None
         self.seller_accepted = False
         self.buyer_accepted = False
-        self.last_mediator_message_to = {"seller": "", "buyer": ""}
+        self.last_mediator_message_to_party = {"seller": "", "buyer": ""}
+        self.results = None
+        self.last_turn = {"seller": -1, "buyer": -1, self._mediator_role: -1}
 
-        # Determine starting party
-        active_party_id: Literal["seller", "buyer"] = random.choice(["seller", "buyer"])
+        first_party_id: Literal["seller", "buyer"] = random.choice(["seller", "buyer"])
+        self.current_party_id_to_act = first_party_id
+        
+        party_agent = self._get_party(first_party_id)
+        party_prompt_messages = self._build_party_prompt(first_party_id)
+        
+        try:
+            party_raw_response = party_agent.act(party_prompt_messages).content
+            party_action_json = extract_json_block(party_raw_response)
+            if not party_action_json or not isinstance(party_action_json.get("action"), str):
+                print(f"Warning: Missing or invalid JSON from {first_party_id} on first turn. Raw: {party_raw_response}")
+                party_action_json = {"action": "inquiry", "message": party_raw_response, "thoughts": "Initial message, JSON parsing failed."}
+        except Exception as e:
+            print(f"Error getting/parsing action from {party_agent.name} on first turn: {e}")
+            party_action_json = {"action": "inquiry", "message": f"Error: {e}", "thoughts": "Error during initial action."}
+            party_raw_response = json.dumps(party_action_json)
 
-        md_log_file = None
-        if md_log_path:
-            try:
-                md_log_file = open(md_log_path, 'w', encoding='utf-8')
-                md_log_file.write(f"# Negotiation Log: {self.scenario.name}\n\n")
-                md_log_file.write(f"- Party A ({self.party_A.role}): {self.party_A.name}\n")
-                md_log_file.write(f"- Party B ({self.party_B.role}): {self.party_B.name}\n")
-                md_log_file.write(f"- Mediator: {self.mediator.name}\n")
-                md_log_file.write(f"- Seed: {seed}\n")
-                md_log_file.write(f"- Starting Party: {active_party_id}\n")
-                md_log_file.write(f"- Max turns per party: {self.scenario.n_turns}\n\n")
-                md_log_file.write(f"- Negotiation State:\n")
-                md_log_file.write(f"  {self.scenario.negotiation_state}\n")
-                md_log_file.write("---\n\n")
-            except IOError as e:
-                print(f"Warning: Could not open markdown log file {md_log_path}: {e}")
-                md_log_file = None # Ensure it's None if opening failed
-
-        print(f"--- Starting Negotiation: {self.scenario.name} ---")
+        self.last_party_action_json = party_action_json
+        
+        self._record_turn(
+            actor_role=first_party_id,
+            prompt_or_payload=party_prompt_messages,
+            raw_response=party_raw_response,
+            parsed_response_json=party_action_json,
+            recipient_party_id=None,
+            actor_identifier=first_party_id 
+        )
+        
+        print(f"--- Initialization: {self.scenario.name} ---")
         print(f"Party A ({self.party_A.role}): {self.party_A.name}")
         print(f"Party B ({self.party_B.role}): {self.party_B.name}")
-        print(f"Mediator: {self.mediator.name}")
-        print(f"Starting Party: {active_party_id}")
-        print(f"Max turns per party: {self.scenario.n_turns}")
-        print("---")
+        print(f"First to speak (to mediator): {first_party_id}")
+        print(f"Max turns per party (before external mediator check): {self.scenario.n_turns}")
 
-        while not self._is_finished():
-            current_party = self._get_party(active_party_id)
-            inactive_party_id = "buyer" if active_party_id == "seller" else "seller"
-            turn_num_display = self.turn // 2 + 1
-            party_turn_marker = 1 if active_party_id == 'seller' else 2
-            if debug:
-                print(f"\n--- Turn {turn_num_display}.{party_turn_marker}: {current_party.name}'s move (to Mediator) ---")
-            if md_log_file:
-                 md_log_file.write(f"## Turn {turn_num_display}.{party_turn_marker}: {current_party.name} -> Mediator\n\n")
+        return first_party_id, party_action_json, party_raw_response
 
-            # 1. Get Party Action
-            party_prompt = self._build_party_prompt(active_party_id)
-            try:
-                party_raw_response = current_party.act(party_prompt)
-                party_action_json = extract_json_block(party_raw_response)
-                if not party_action_json or not isinstance(party_action_json.get("action"), str):
-                    raise ParseError("Missing or invalid 'action' key in party JSON.")
-            except (ParseError, TypeError, Exception) as e:
-                print(f"Error getting/parsing action from {current_party.name}: {e}")
-                print("Treating as REJECT.")
-                party_action_json = {"action": "reject"} # Default to reject on error
-                party_raw_response = f"Error: {e}\nDefaulting to: {json.dumps(party_action_json)}"
+    def process_mediator_message_and_get_next_party_response(
+        self, 
+        mediator_action_json: Dict[str, Any], 
+        mediator_raw_response: str
+    ) -> Tuple[Optional[Literal["seller", "buyer"]], Optional[Dict[str, Any]], Optional[str], bool]:
+        if not self.current_party_id_to_act or not self.last_party_action_json:
+            raise ValueError("process_mediator_message called before a party has acted or action recorded.")
 
-            # Log party message before recording internally
-            if md_log_file:
-                md_log_file.write(f"**{current_party.name} ({current_party.role}) says:**\n")
-                md_log_file.write(f"{party_prompt}")
-                md_log_file.write(f"{party_raw_response}")
+        self._update_state_from_action(self.last_party_action_json, self.current_party_id_to_act)
 
-            self._record_turn(current_party, current_party.role, party_prompt, party_raw_response, party_action_json, recipient=None, actor_id=active_party_id) # Party -> Mediator
-            if debug:
-                print(f"{current_party.name} proposed action: {party_action_json}")
+        recipient_party_id = mediator_action_json.get("recipient")
+        if recipient_party_id not in ["seller", "buyer"]:
+            print(f"Warning: Mediator JSON missing valid recipient. Got: {recipient_party_id}. Defaulting based on alternation.")
+            recipient_party_id = "buyer" if self.current_party_id_to_act == "seller" else "seller"
+            mediator_action_json["recipient"] = recipient_party_id
 
-            # 2. Mediator Relays Action
-            if debug:
-                print(f"--- Turn {turn_num_display}.{party_turn_marker}: Mediator relays to {inactive_party_id} ---")
-            if md_log_file:
-                md_log_file.write(f"## Turn {turn_num_display}.{party_turn_marker}: Mediator -> {self._get_party(inactive_party_id).name}\n\n")
+        self._record_turn(
+            actor_role="mediator",
+            prompt_or_payload=mediator_action_json,
+            raw_response=mediator_raw_response,
+            parsed_response_json=mediator_action_json,
+            recipient_party_id=recipient_party_id,
+            actor_identifier="external_mediator"
+        )
+        
+        self.last_mediator_message_to_party[recipient_party_id] = mediator_action_json.get("message", mediator_raw_response)
+        
+        if self._is_finished():
+            self._finalize_negotiation_results()
+            print("\n--- Negotiation Finished (after mediator message) ---")
+            return None, None, None, True 
 
-            mediator_prompt = self._build_mediator_prompt(active_party_id)
-            try:
-                mediator_raw_response = self.mediator.act(mediator_prompt)
-                mediator_action_json = extract_json_block(mediator_raw_response)
-                if not mediator_action_json or not isinstance(mediator_action_json.get("action"), str):
-                     raise ParseError("Missing or invalid 'action' key in mediator JSON.")
-                # Crucially, the mediator *should* be relaying the *party's* action
-                # Here we parse the *mediator's* message to log what *it* sent
-            except (ParseError, TypeError, Exception) as e:
-                print(f"Error getting/parsing action from {self.mediator.name}: {e}")
-                print(f"Attempting to relay original party action {party_action_json} directly.")
-                mediator_action_json = party_action_json # Fallback to party's action
-                mediator_raw_response = f"Error processing mediator response: {e}\nRelaying party action: {json.dumps(mediator_action_json)}"
+        self.turn += 1
+        
+        next_acting_party_id = recipient_party_id
+        self.current_party_id_to_act = next_acting_party_id
+        
+        party_agent = self._get_party(next_acting_party_id)
+        party_prompt_messages = self._build_party_prompt(next_acting_party_id)
+        
+        try:
+            party_raw_response = party_agent.act(party_prompt_messages).content
+            party_action_json = extract_json_block(party_raw_response)
+            if not party_action_json or not isinstance(party_action_json.get("action"), str):
+                print(f"Warning: Missing or invalid JSON from {next_acting_party_id}. Raw: {party_raw_response}")
+                party_action_json = {"action": "inquiry", "message": party_raw_response, "thoughts": "JSON parsing failed."}
+        except Exception as e:
+            print(f"Error getting/parsing action from {party_agent.name}: {e}")
+            party_action_json = {"action": "inquiry", "message": f"Error: {e}", "thoughts": "Error during action."}
+            party_raw_response = json.dumps(party_action_json)
 
-            # Log mediator message before recording internally
-            if md_log_file:
-                md_log_file.write(f"**{self.mediator.name} (Mediator) says to {self._get_party(inactive_party_id).name}:**\n")
-                md_log_file.write(f"```text\n{mediator_prompt}\n```\n")
-                md_log_file.write(f"```text\n{mediator_raw_response}\n```\n")
-                md_log_file.write(f"**Action Parsed/Relayed:** `{json.dumps(mediator_action_json)}`\n\n")
-                md_log_file.write("---\n\n") # Separator between full turns
+        self.last_party_action_json = party_action_json
+        
+        self._record_turn(
+            actor_role=next_acting_party_id,
+            prompt_or_payload=party_prompt_messages,
+            raw_response=party_raw_response,
+            parsed_response_json=party_action_json,
+            recipient_party_id=None,
+            actor_identifier=next_acting_party_id
+        )
 
-            # 3. Update State based on the *original party's intended action*
-            self._update_state_from_action(party_action_json, active_party_id)
+        if self._is_finished():
+            self._finalize_negotiation_results()
+            print("\n--- Negotiation Potentially Finished (after party response to mediator) ---")
+            pass
 
-            # 4. Record Mediator's turn and store message for next party prompt
-            self._record_turn(self.mediator, "mediator", mediator_prompt, mediator_raw_response, mediator_action_json, recipient=inactive_party_id, actor_id=active_party_id)
-            self.last_mediator_message_to[inactive_party_id] = mediator_raw_response
-            if debug:
-                print(f"Mediator message to {inactive_party_id}: {mediator_action_json}")
+        return next_acting_party_id, party_action_json, party_raw_response, False
 
-            # 5. Advance turn and switch party
-            self.turn += 1
-            active_party_id = inactive_party_id
+    def _finalize_negotiation_results(self) -> None:
+        if self.results is not None:
+            return
 
-            # Check for early finish after state update
-            if self._is_finished():
-                break
-
-        # 6. Determine Final Outcome
-        print("\n--- Negotiation Finished ---")
-        final_outcome: Optional[Dict[str, Any]] = None
-        # Determine acceptance based on the logic in _is_finished
+        print("\n--- Finalizing Negotiation Results ---")
         accepted = False
         if self.current_offer is not None:
             if self.offer_proposed_by == "seller" and self.buyer_accepted:
                 accepted = True
             elif self.offer_proposed_by == "buyer" and self.seller_accepted:
                 accepted = True
-
-        if md_log_file:
-            md_log_file.write("## Final Outcome\n\n")
+        
+        final_outcome_for_payoff = self.current_offer if accepted else None
 
         if accepted:
-            final_outcome = self.current_offer
-            print(f"Agreement reached! Offer: {final_outcome}")
-            if md_log_file:
-                md_log_file.write(f"**Agreement reached!**\n")
-                md_log_file.write(f"- Final Offer: `{json.dumps(final_outcome)}`\n")
+            print(f"Agreement reached! Offer: {final_outcome_for_payoff}")
         else:
             print("No agreement reached.")
-            if md_log_file:
-                md_log_file.write("**No agreement reached.**\n")
 
-        payoff_A, payoff_B = self.scenario.get_payoffs(final_outcome, self.turn // 2)
+        effective_turns_for_payoff = self.turn 
+
+        payoff_A, payoff_B = self.scenario.get_payoffs(final_outcome_for_payoff, effective_turns_for_payoff)
         print(f"Final Payoffs: Party A ({self.party_A.role}) = {payoff_A}, Party B ({self.party_B.role}) = {payoff_B}")
-        if md_log_file:
-            md_log_file.write(f"- Final Payoff A ({self.party_A.role}): {payoff_A}\n")
-            md_log_file.write(f"- Final Payoff B ({self.party_B.role}): {payoff_B}\n")
-            md_log_file.write(f"- Turns taken (total agent messages): {self.turn}\n")
-
 
         self.results = {
-            "seed": seed,
             "scenario": self.scenario.name,
             "party_A": self.party_A.name,
             "party_B": self.party_B.name,
-            "mediator": self.mediator.name,
+            "mediator": "external_mediator_tool_user",
             "accepted": accepted,
-            "final_offer": final_outcome,
+            "final_offer": final_outcome_for_payoff,
             "payoff_A": payoff_A,
             "payoff_B": payoff_B,
-            "turns_taken": self.turn,
+            "turns_taken_for_payoff_calc": effective_turns_for_payoff,
+            "total_transcript_entries": len(self.transcript),
             "transcript": self.transcript,
         }
 
-
-        eval_party_A = self.score_by_agent_eval(self.party_A)
-        eval_party_B = self.score_by_agent_eval(self.party_B)
-
-        self.results["eval_party_A"] = eval_party_A
-        self.results["eval_party_B"] = eval_party_B
-        self.results['normalized_payoff_A'] = self.score_by_payoff(self.party_A)
-        self.results['normalized_payoff_B'] = self.score_by_payoff(self.party_B)
-
-        # Close markdown log file if open
-        if md_log_file:
-            md_log_file.write(f"## Evaluation\n\n")
-            md_log_file.write(f"**Party A ({self.party_A.role}) evaluation:** {eval_party_A}\n")
-            md_log_file.write(f"**Party B ({self.party_B.role}) evaluation:** {eval_party_B}\n")
-
-            try:
-                md_log_file.close()
-            except IOError as e:
-                print(f"Warning: Could not close markdown log file {md_log_path}: {e}")
-
-
-        # Save results to JSON log file if path provided
-        if json_log_path:
-            try:
-                with open(json_log_path, 'w', encoding='utf-8') as f_json:
-                    json.dump(self.results, f_json, indent=2)
-            except IOError as e:
-                print(f"Warning: Could not write JSON log file {json_log_path}: {e}")
-
-
-        return self.results 
-
-    
     def score_by_payoff(self, party: PartyAgent) -> float:
-        """
-        Scores the payoff for a given role.
-        """
         if not self.results:
-            raise ValueError("Results not found. Run the negotiation first.")
-        outcome = self.results["final_offer"]
-        seller_payoff, buyer_payoff = self.scenario.get_payoffs(outcome, self.turn // 2)
+            self._finalize_negotiation_results()
+            if not self.results:
+                 raise ValueError("Results not found and could not be finalized. Run the negotiation steps first.")
 
+        payoff = self.results["payoff_A"] if party.role == "seller" else self.results["payoff_B"]
         sigma = self.scenario.outcome_sigma
-
-        if party.role == "seller":
-            return float(seller_payoff/sigma)
-        elif party.role == "buyer":
-            return float(buyer_payoff/sigma)
-        else:
-            raise ValueError(f"Unknown role for scoring: {party.role}")
+        if sigma == 0: return 0.0
+        return float(payoff / sigma) if payoff is not None else 0.0
 
 
     def score_by_agent_eval(self, party: PartyAgent) -> float:
-        """
-        Scores the payoff for a given role.
-        """
         if not self.results:
-            raise ValueError("Results not found. Run the negotiation first.")
+            self._finalize_negotiation_results()
+            if not self.results:
+                raise ValueError("Results not found for agent evaluation. Run negotiation steps first.")
+
         party_id = "seller" if party == self.party_A else "buyer"
         private_context = self.scenario.get_private_context(party.role)
         private_context_str = self.scenario.format_private_context(private_context)
-        chat_history = self._prepare_chat_for_recipient(party_id)
-
-        final_offer = "Negotiation concluded with no agreement reached" if not self.results["accepted"] else self.results["final_offer"]
+        
+        final_offer_display = "Negotiation concluded with no agreement reached."
+        if self.results["accepted"] and self.results["final_offer"]:
+            final_offer_display = json.dumps(self.results["final_offer"])
 
         base_eval_context = {
             "role": party.role,
             "scenario_name": self.scenario.name,
             "private_context": private_context_str,
-            "final_offer": final_offer,
-            "time_taken": f"{self.turn // 2} days",
+            "final_offer": final_offer_display,
+            "time_taken": f"{self.results.get('turns_taken_for_payoff_calc', self.turn)} rounds/exchanges",
         }
         base_eval_prompt_str = load_template("evaluator_prompt.txt")
         system_prompt_content = render_template(base_eval_prompt_str, base_eval_context)
 
-        # Prepare messages for chat template
-        messages = [
-            {"role": "system", "content": system_prompt_content}
-        ]
+        messages_for_evaluator = [{"role": "system", "content": system_prompt_content}]
         
-        # Get the conversation history formatted for this party for evaluation context
-        # This should use the party-specific view (roles 'user' and 'agent')
-        chat_history = self._prepare_chat_for_recipient(party_id) # party_id is 'seller' or 'buyer'
-        messages.extend(chat_history)
-
-        evaluator_prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) # No generation prompt for eval
-
-        evaluator_response = party.act(evaluator_prompt)
-        evaluator_response_json = extract_json_block(evaluator_response)
-        if not evaluator_response_json or not isinstance(evaluator_response_json.get("rating"), (int, float)):
-            raise ParseError("Missing or invalid 'rating' key in evaluator JSON.")
-        return evaluator_response_json["rating"]/10.0
+        chat_history_for_eval = []
+        for entry in self.results.get("transcript", []):
+            if entry['role'] == "mediator" and entry['recipient'] == party_id:
+                 chat_history_for_eval.append({"role": "agent", "content": entry['response'].get('message', entry['raw_response'])})
+            elif entry['actor_id'] == party_id and entry['recipient'] is None:
+                eval_content_parts = []
+                if 'thoughts' in entry['response'] and entry['response']['thoughts']:
+                     eval_content_parts.append(f"My thoughts: {entry['response'].get('thoughts', '')}")
+                eval_content_parts.append(f"My message to mediator: {entry['response'].get('message', '')}")
+                eval_content_parts.append(f"My proposed action: {entry['response'].get('action', '')}")
+                if entry['response'].get('price') is not None:
+                    eval_content_parts.append(f"My proposed price: {entry['response'].get('price')}")
+                chat_history_for_eval.append({"role": entry['role'], "content": "\n".join(eval_content_parts)})
         
+        messages_for_evaluator.extend(chat_history_for_eval)
+
+        evaluator_response_raw = party.act(messages_for_evaluator).content
+        evaluator_response_json = extract_json_block(evaluator_response_raw)
+        if evaluator_response_json and isinstance(evaluator_response_json.get("rating"), (int, float)):
+            return float(evaluator_response_json["rating"]) / 10.0
+        else:
+            print(f"Warning: Missing or invalid 'rating' key in evaluator JSON for {party_id}. Response: {evaluator_response_raw}")
+            return 0.0

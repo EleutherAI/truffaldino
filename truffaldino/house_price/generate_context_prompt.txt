@@ -58,4 +58,4 @@ Generate three distinct narrative contexts (strings): `buyer_context`, `seller_c
 }}
 ```
 
-**Now, generate the JSON response based on the provided input data.** 
+**Now, generate the JSON response based on the provided input data. Remember to include the appropriate guards to indicate JSON content** 

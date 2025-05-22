@@ -1,5 +1,5 @@
 import pytest
-from negotiation_env.parse import extract_json_block, ParseError
+from truffaldino.parse import extract_json_block, ParseError
 
 # Test cases for extract_json_block
 VALID_CASES = [
