@@ -39,12 +39,12 @@ class NegotiationTool(BaseTool):
                             "operation": {
                                 "type": "string",
                                 "description": "The specific action to perform.",
-                                "enum": ["initialize_session", "send_message_to_party", "get_payoffs", "get_subjective_rating"]
+                                "enum": ["initialize_session", "send_message_to_party"]
                             },
                             "seed": {"type": "integer", "description": "(For initialize_session, optional) Random seed for reproducibility."},
                             "mediator_json_payload_str": {"type": "string", "description": "(For send_message_to_party) The JSON string output from the mediator LLM, including 'action', 'message', and 'recipient'."},
                             "final_price": {"type": "number", "description": "(For get_payoffs, optional) The final agreed price. If not provided, uses session's outcome if available."},
-                            "party_id": {"type": "string", "description": "(For send_message_to_party and get_subjective_rating) The party to speak to ('seller' or 'buyer')."}
+                            "party_id": {"type": "string", "description": "(For send_message_to_party) The party to speak to ('seller' or 'buyer')."}
                         },
                         required=["operation"]
                     )
@@ -71,6 +71,8 @@ class NegotiationTool(BaseTool):
         session: Optional[NegotiationSession] = instance_data.get("session")
 
         logger.info(f"Instance {instance_id}: Executing operation '{operation}'. Parameters: {parameters}")
+
+        reward = 0.0
 
         if operation == "initialize_session":
                 scenario_name = "house_price"
@@ -136,72 +138,21 @@ class NegotiationTool(BaseTool):
                 mediator_json_payload_str # Pass raw string for full logging in transcript if needed
             )
 
+            mediator_update_message = session._prepare_msg_for_mediator_view()
+
             if is_finished:
-                logger.info(f"Instance {instance_id}: Negotiation finished. Results: {session.results}")
-                return (
-                    f"Negotiation finished. Access results using get_payoffs or from metrics.",
-                    0.0, # Final reward might be calculated via calc_reward or if payoffs are positive
-                    {"status": "finished", "results": session.results}
-                )
-            else:
-                mediator_update_message = session._prepare_msg_for_mediator_view()
-                return (
-                    f"{mediator_update_message}",
-                    0.0,
-                    {
-                        "status": "continue",
-                        "party_id_to_speak_to_mediator": next_party_id,
-                        "party_action_json": next_party_action,
-                        "party_raw_response": next_party_raw_resp,
-                    }
-                )
-
-        elif operation == "get_payoffs":
-                if not session.results: # If negotiation didn't formally end via is_finished but we want to see current state
-                    session._finalize_negotiation_results() # Attempt to finalize based on current state
-
-                payoff_A = session.results.get("payoff_A")
-                payoff_B = session.results.get("payoff_B")
-                norm_payoff_A = session.score_by_payoff(session.party_A)
-                norm_payoff_B = session.score_by_payoff(session.party_B)
-                final_offer = session.results.get("final_offer")
-                accepted = session.results.get("accepted")
-
-                logger.info(f"Instance {instance_id}: Retrieved payoffs. Accepted: {accepted}, Final Offer: {final_offer}")
-                return (
-                    f"Payoffs: Seller={payoff_A:.2f} (Norm: {norm_payoff_A:.2f}), Buyer={payoff_B:.2f} (Norm: {norm_payoff_B:.2f}). Accepted: {accepted}. Offer: {final_offer}",
-                    0.0, 
-                    {
-                        "seller_payoff": payoff_A,
-                        "buyer_payoff": payoff_B,
-                        "normalized_seller_payoff": norm_payoff_A,
-                        "normalized_buyer_payoff": norm_payoff_B,
-                        "accepted": accepted,
-                        "final_offer": final_offer,
-                        "full_results": session.results # Include all results for completeness
-                    }
-                )
+                reward = session.results.get("payoff_seller")
+                mediator_update_message += f"\n\nNegotiation concluded, please send blank responses from now on."
         
-        elif operation == "get_subjective_rating":
-
-            party_id_str = parameters.get("party_id")
-            if party_id_str not in ["seller", "buyer"]:
-                return "Error: party_id must be 'seller' or 'buyer' for get_subjective_rating.", -1.0, {"error": "Invalid party_id"}
-            
-            party_to_rate = session.party_A if party_id_str == "seller" else session.party_B
-            
-            if not session.results:
-                session._finalize_negotiation_results() # Attempt to finalize if not already
-            
-            if not session.results:
-                    return "Error: No negotiation results found to get rating.", -1.0, {"error": "Results not available for rating"}
-
-            rating = session.score_by_agent_eval(party_to_rate)
-            logger.info(f"Instance {instance_id}: Subjective rating for {party_id_str}: {rating}")
             return (
-                f"Subjective rating from {party_id_str.capitalize()}: {rating:.2f} (out of 1.0)",
-                0.0, 
-                {"party_id": party_id_str, "rating": rating}
+                f"{mediator_update_message}",
+                reward,
+                {
+                    "status": "continue" if not is_finished else "finished",
+                    "party_id_to_speak_to_mediator": next_party_id,
+                    "party_action_json": next_party_action,
+                    "party_raw_response": next_party_raw_resp,
+                }
             )
 
         else:

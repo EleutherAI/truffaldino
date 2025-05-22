@@ -23,7 +23,7 @@ def openrouter_llm_call(messages: List[Dict[str, str]], agent_name: str = "Unkno
     print("--------------------------------------")
 
     # Extract model from kwargs or use a default
-    model = kwargs.pop("model", "qwen/qwen3-14b:free")
+    model = kwargs.pop("model", "qwen/qwen3-14b")
 
     try:
         client = OpenAI(

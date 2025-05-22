@@ -173,17 +173,17 @@ SUBURB_PRICES = {
 }
 
 DEFAULT_SIGMA_Q = 0.07 # Quality premium doesn't scale directly with price, but we want magnitude to be similar
-DEFAULT_SIGMA_DELTA = 0.08 # Delta doesn't scale directly with price, but we want magnitude to be similar
-DEFAULT_SIGMA_OFFER = 0.05
+DEFAULT_SIGMA_DELTA = 0.05 # Delta doesn't scale directly with price, but we want magnitude to be similar
+DEFAULT_SIGMA_OFFER = 0.03
 DEFAULT_KAPPA = 1.0
 DEFAULT_SELLER_CARRY_COST_MEAN = 0.05/365
 DEFAULT_SELLER_CARRY_COST_STD = 0.2
 DEFAULT_SIGMA_SELLER_DELTA = 0.06 # Added: Seller preference for liquidity/not owning
 DEFAULT_SELLER_CONSTRAINT_SCALE = 10000
-DEFAULT_SELLER_DEADLINE_MEAN = 30
+DEFAULT_SELLER_DEADLINE_MEAN = 10 # Short because sellers are too patient
 DEFAULT_BUYER_WAIT_COST_MEAN = 120
 DEFAULT_BUYER_WAIT_COST_STD = 30
-DEFAULT_BUYER_HORIZON_DAYS = 60
+DEFAULT_BUYER_HORIZON_DAYS = 10 # Somewhat short as a hack to account for buyer not necessarily getting thier top preference
 DEFAULT_DT_DAYS = 1
 DEFAULT_SIGMA_IDIOSYNCRATIC_LOG = 0.03 # Std dev for log-price idiosyncratic noise
 R_DAILY_REF_FOR_PATIENCE = 0.05/365 # Reference daily interest rate for patience calc
@@ -279,20 +279,20 @@ def sample_seller_idiosyncratics(rng: np.random.Generator, seller_role: SellerRo
     """Samples seller-specific costs, constraints, deadlines, and liquidity preference, adjusting based on seller role."""
     # Sample C_s_frac based on seller role
     if seller_role == "Owner-Occupier":
-        # Strictly negative carrying cost
+        # Strictly positive carrying cost
         abs_cost_frac = abs(rng.normal(DEFAULT_SELLER_CARRY_COST_MEAN, DEFAULT_SELLER_CARRY_COST_STD * DEFAULT_SELLER_CARRY_COST_MEAN))
-        C_s_frac = -abs_cost_frac
+        C_s_frac = abs_cost_frac # Changed from -abs_cost_frac
     elif seller_role == "Investor":
         # Generally positive carrying cost (use original positive mean)
         C_s_frac = rng.normal(DEFAULT_SELLER_CARRY_COST_MEAN, DEFAULT_SELLER_CARRY_COST_STD * DEFAULT_SELLER_CARRY_COST_MEAN)
     else: # Should not happen with Literal type hinting
         raise ValueError(f"Invalid seller_role: {seller_role}")
 
-    # Removed max(0, C_s_frac) - Allow negative C_s (net income from holding)
     k_s = rng.exponential(scale=DEFAULT_SELLER_CONSTRAINT_SCALE) # Capital constraint penalty
     D = rng.poisson(lam=DEFAULT_SELLER_DEADLINE_MEAN) # Soft deadline (days)
     # Sample seller delta (liquidity preference) - Ensure strictly positive
-    delta_s_frac = -abs(rng.normal(0, DEFAULT_SIGMA_SELLER_DELTA))
+    # Positive delta_s_frac means seller values house *less* due to liquidity needs
+    delta_s_frac = abs(rng.normal(0, DEFAULT_SIGMA_SELLER_DELTA)) # Changed from -abs(...)
     # delta_s is calculated later based on P_today
     return {"C_s_frac": C_s_frac, "k_s": k_s, "D": D, "delta_s_frac": delta_s_frac}
 

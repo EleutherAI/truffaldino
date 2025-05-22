@@ -147,7 +147,7 @@ class NegotiationSession:
                     "content": entry['raw_response'],
                     "recipient": entry['recipient'],
                 })
-        
+
         if processed_turns_in_this_call:
             self.last_turn[self._mediator_role] = max(processed_turns_in_this_call)
 
@@ -353,13 +353,13 @@ class NegotiationSession:
         
         self.last_mediator_message_to_party[recipient_party_id] = mediator_action_json.get("message", mediator_raw_response)
         
-        if self._is_finished():
+        if self._is_finished() or self.turn >= self.scenario.n_turns * 2:
             self._finalize_negotiation_results()
             print("\n--- Negotiation Finished (after mediator message) ---")
             return None, None, None, True 
 
         self.turn += 1
-        
+
         next_acting_party_id = recipient_party_id
         self.current_party_id_to_act = next_acting_party_id
         
@@ -374,7 +374,7 @@ class NegotiationSession:
                 party_action_json = {"action": "inquiry", "message": party_raw_response, "thoughts": "JSON parsing failed."}
         except Exception as e:
             print(f"Error getting/parsing action from {party_agent.name}: {e}")
-            party_action_json = {"action": "inquiry", "message": f"Error: {e}", "thoughts": "Error during action."}
+            party_action_json = {"action": "inquiry", "message": f"Party did not respond to your message.", "thoughts": "Error during action."}
             party_raw_response = json.dumps(party_action_json)
 
         self.last_party_action_json = party_action_json
@@ -387,11 +387,6 @@ class NegotiationSession:
             recipient_party_id=None,
             actor_identifier=next_acting_party_id
         )
-
-        if self._is_finished():
-            self._finalize_negotiation_results()
-            print("\n--- Negotiation Potentially Finished (after party response to mediator) ---")
-            pass
 
         return next_acting_party_id, party_action_json, party_raw_response, False
 
@@ -487,7 +482,12 @@ class NegotiationSession:
         
         messages_for_evaluator.extend(chat_history_for_eval)
 
-        evaluator_response_raw = party.act(messages_for_evaluator).content
+        prompt_for_evaluator = self.tokenizer.apply_chat_template(
+            messages_for_evaluator,
+            tokenize=False
+        )
+
+        evaluator_response_raw = party.act([{"role": "system", "content": prompt_for_evaluator}]).content
         evaluator_response_json = extract_json_block(evaluator_response_raw)
         if evaluator_response_json and isinstance(evaluator_response_json.get("rating"), (int, float)):
             return float(evaluator_response_json["rating"]) / 10.0
